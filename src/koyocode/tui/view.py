@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
+
+_TOOL_RESULT_MAX_LINES = 8
 
 
 def user_block(text: str) -> Text:
@@ -37,6 +40,27 @@ def streaming_view(cur_reply: str, elapsed_s: int) -> Group:
         parts.append(Text(cur_reply))
     parts.append(Text(f"Imagining… ({elapsed_s}s)", style="dim italic"))
     return Group(*parts)
+
+
+def streaming_tool_view(name: str, args: str, elapsed_s: int) -> Text:
+    """流式动态区（工具执行中）：工具行 + Running 计时。"""
+    return Text(f"● {name}({args}) Running… ({elapsed_s}s)", style="bold cyan")
+
+
+def tool_line(name: str, args: str) -> Text:
+    """已完成工具行：圆点 + name(args) 加粗（F8/AC11）。"""
+    return Text("● ", style="bold cyan") + Text(f"{name}({args})", style="bold")
+
+
+def tool_result_summary(result: str, is_error: bool) -> Padding:
+    """工具结果摘要：⎿ 前缀 + 缩进，UI 截断约 8 行（AC13/N5）。"""
+    lines = result.splitlines()
+    if len(lines) > _TOOL_RESULT_MAX_LINES:
+        body = "\n".join(lines[:_TOOL_RESULT_MAX_LINES]) + "\n[…]"
+    else:
+        body = result
+    style = "bold red" if is_error else "dim"
+    return Padding(Text(f"⎿ {body}", style=style), (0, 0, 0, 2))
 
 
 def render_statusbar(name: str, model: str) -> Table:

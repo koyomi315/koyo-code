@@ -10,8 +10,10 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from dataclasses import dataclass
 from enum import Enum
 
+from rich.markdown import Markdown
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
@@ -21,16 +23,21 @@ from textual.widgets import OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 
 from koyocode import __version__
+from koyocode.agent import Agent, Phase
 from koyocode.config import ProviderConfig
 from koyocode.conversation import Conversation
 from koyocode.llm import Provider, new_provider
 from koyocode.prompt import render_banner
+from koyocode.tool import Registry, new_default_registry
 
 from .view import (
     assistant_block,
     error_block,
     render_statusbar,
+    streaming_tool_view,
     streaming_view,
+    tool_line,
+    tool_result_summary,
     user_block,
 )
 
@@ -41,6 +48,14 @@ class SessionState(Enum):
     SELECTING = "selecting"
     IDLE = "idle"
     STREAMING = "streaming"
+
+
+@dataclass
+class ToolDisplay:
+    """当前执行中工具的展示状态（动态区 Running 指示）。"""
+
+    name: str
+    args: str
 
 
 class InputArea(TextArea):
@@ -82,7 +97,7 @@ class KoyoCodeApp(App):
 
     BINDINGS = [Binding("ctrl+c", "quit", "Quit", priority=True)]
 
-    def __init__(self, providers: list[ProviderConfig]) -> None:
+    def __init__(self, providers: list[ProviderConfig], registry: Registry | None = None) -> None:
         super().__init__()
         self.providers = providers
         self.state = SessionState.SELECTING
@@ -90,6 +105,8 @@ class KoyoCodeApp(App):
         self.conv = Conversation()
         self.cur_reply = ""
         self.turn_start = 0.0
+        self._tool_registry: Registry = registry or new_default_registry()
+        self._cur_tool: ToolDisplay | None = None
         self._stream_task: asyncio.Task[None] | None = None
         self._timer: Timer | None = None
 
@@ -109,9 +126,9 @@ class KoyoCodeApp(App):
     def on_mount(self) -> None:
         self.query_one("#log", RichLog).write(render_banner(__version__, os.getcwd()))
         # TextArea 无原生 placeholder，用输入框边框副标题承载占位提示（AC7）。
-        self.query_one("#input-wrap").border_subtitle = (
-            "Send a message...  (Alt+Enter 换行 · Enter 发送)"
-        )
+        self.query_one(
+            "#input-wrap"
+        ).border_subtitle = "Send a message...  (Alt+Enter 换行 · Enter 发送)"
         if len(self.providers) == 1:
             self.provider = new_provider(self.providers[0])
             self.state = SessionState.IDLE
@@ -162,27 +179,53 @@ class KoyoCodeApp(App):
         self.state = SessionState.STREAMING
         self.query_one("#streaming", Static).remove_class("hidden")
         self._render_streaming()
-        self._stream_task = asyncio.create_task(self._consume_stream())
+        self._stream_task = asyncio.create_task(self._consume_agent_events())
         self._timer = self.set_interval(0.1, self._tick)
 
-    async def _consume_stream(self) -> None:
+    async def _consume_agent_events(self) -> None:
+        """消费 ``Agent.run`` 事件流，分派文本/工具/done/err 到 UI 与历史。"""
         assert self.provider is not None
+        agent = Agent(self.provider, self._tool_registry)
         try:
-            async for ev in self.provider.stream(self.conv.messages()):
+            async for ev in agent.run(self.conv):
                 if ev.err is not None:
                     self._finish_with_error(ev.err)
                     return
+                if ev.tool is not None:
+                    if ev.tool.phase == Phase.START:
+                        self._on_tool_start(ev.tool.name, ev.tool.args)
+                    else:
+                        self._on_tool_end(
+                            ev.tool.name, ev.tool.args, ev.tool.result, ev.tool.is_error
+                        )
+                    continue
                 if ev.text:
                     self.cur_reply += ev.text
                     self._render_streaming()
                 if ev.done:
-                    self._finish_with_assistant(self.cur_reply)
+                    # agent 已把最终答复写入 conv；此处仅渲染到 RichLog。
+                    self._finish_turn(self.cur_reply)
                     return
         except asyncio.CancelledError:
-            # 退出时取消流：静默，应用即将退出，不触碰 widget
+            # 退出时取消流：静默，应用即将退出，不触碰 widget。
             raise
         except Exception as e:  # noqa: BLE001 — 兜底，保证不中断会话
             self._finish_with_error(e)
+
+    def _on_tool_start(self, name: str, args: str) -> None:
+        """工具开始：先提交 preamble 文本到滚动历史，再置 Running 指示。"""
+        if self.cur_reply:
+            self.query_one("#log", RichLog).write(Markdown(self.cur_reply))
+            self.cur_reply = ""
+        self._cur_tool = ToolDisplay(name=name, args=args)
+        self._render_streaming()
+
+    def _on_tool_end(self, name: str, args: str, result: str, is_error: bool) -> None:
+        """工具结束：写工具行 + 结果摘要到滚动历史，清 Running 指示。"""
+        self.query_one("#log", RichLog).write(tool_line(name, args))
+        self.query_one("#log", RichLog).write(tool_result_summary(result, is_error))
+        self._cur_tool = None
+        self._render_streaming()
 
     def _tick(self) -> None:
         if self.state == SessionState.STREAMING:
@@ -190,12 +233,17 @@ class KoyoCodeApp(App):
 
     def _render_streaming(self) -> None:
         elapsed = int(time.monotonic() - self.turn_start)
-        self.query_one("#streaming", Static).update(streaming_view(self.cur_reply, elapsed))
+        if self._cur_tool is not None:
+            view = streaming_tool_view(self._cur_tool.name, self._cur_tool.args, elapsed)
+        else:
+            view = streaming_view(self.cur_reply, elapsed)
+        self.query_one("#streaming", Static).update(view)
 
-    def _finish_with_assistant(self, reply: str) -> None:
+    def _finish_turn(self, reply: str) -> None:
+        """done：渲染最终答复到 RichLog 并回到 IDLE（conv 已由 agent 写入）。"""
         elapsed = int(time.monotonic() - self.turn_start)
-        self.conv.add_assistant(reply)
-        self.query_one("#log", RichLog).write(assistant_block(reply, elapsed))
+        if reply:
+            self.query_one("#log", RichLog).write(assistant_block(reply, elapsed))
         self._cleanup_streaming()
         self.state = SessionState.IDLE
         self.query_one("#input", InputArea).focus()
@@ -212,6 +260,7 @@ class KoyoCodeApp(App):
             self._timer = None
         self._stream_task = None
         self.cur_reply = ""
+        self._cur_tool = None
         streaming = self.query_one("#streaming", Static)
         streaming.update("")
         streaming.add_class("hidden")
