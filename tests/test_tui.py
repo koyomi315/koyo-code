@@ -4,10 +4,11 @@
 """
 
 import asyncio
+import json
 
 import koyocode.tui.app as appmod
 from koyocode.config import ProviderConfig
-from koyocode.llm import StreamEvent
+from koyocode.llm import StreamEvent, ToolCall
 from koyocode.tui import KoyoCodeApp, SessionState
 
 
@@ -27,7 +28,7 @@ class FakeProvider:
     def model(self):
         return self._model
 
-    async def stream(self, msgs):  # type: ignore[no-untyped-def]
+    async def stream(self, msgs, tools):  # type: ignore[no-untyped-def]
         for e in self._events:
             await asyncio.sleep(0)
             yield e
@@ -177,5 +178,75 @@ def test_alt_enter_inserts_newline(monkeypatch):
             assert "\n" in inp.text, f"Alt+Enter 未插入换行，input={inp.text!r}"
             # 未提交：仍处于 IDLE
             assert app.state == SessionState.IDLE
+
+    _run(run())
+
+
+class _ScriptedFakeProvider:
+    """按调用次序依次吐出预设脚本（支持多轮：工具调用轮 + 续答轮）。"""
+
+    def __init__(self, scripts):
+        self._scripts = scripts
+        self._i = 0
+
+    @property
+    def name(self):
+        return "Fake"
+
+    @property
+    def model(self):
+        return "fake-1"
+
+    async def stream(self, msgs, tools):  # type: ignore[no-untyped-def]
+        script = self._scripts[self._i]
+        self._i += 1
+        for e in script:
+            await asyncio.sleep(0)
+            yield e
+
+
+def test_tool_call_turn_renders_and_round_trips(monkeypatch):
+    """AC8（TUI 级）：工具调用轮经 App 完整跑通——历史含 tool 回合且回到 IDLE。"""
+    from pathlib import Path
+
+    target = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    fake = _ScriptedFakeProvider(
+        scripts=[
+            [
+                StreamEvent(text="我先读取该文件"),
+                StreamEvent(
+                    tool_calls=[
+                        ToolCall(id="c1", name="read_file", input=json.dumps({"path": str(target)}))
+                    ]
+                ),
+                StreamEvent(done=True),
+            ],
+            [
+                StreamEvent(text="已读取并总结完毕"),
+                StreamEvent(done=True),
+            ],
+        ]
+    )
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = app.query_one("#input", appmod.InputArea)
+            inp.text = "读 pyproject.toml 并总结"
+            await pilot.pause()
+            await pilot.press("enter")
+            for _ in range(40):
+                await pilot.pause()
+                if app.state == SessionState.IDLE:
+                    break
+            assert app.state == SessionState.IDLE
+            msgs = app.conv.messages()
+            # [user, assistant(tool_calls), tool, assistant(最终文本)]
+            assert [m.role for m in msgs] == ["user", "assistant", "tool", "assistant"]
+            assert msgs[1].tool_calls[0].name == "read_file"
+            assert msgs[2].tool_results[0].is_error is False
+            assert msgs[3].content == "已读取并总结完毕"
 
     _run(run())
