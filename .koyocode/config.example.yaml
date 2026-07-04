@@ -1,0 +1,18 @@
+# KoyoCode 配置文件
+# 复制本文件为 .koyocode/config.yaml 并填入真实密钥后即可使用。
+# providers 列表可含多项；多于一项时，启动后会出现方向键选择列表。
+
+providers:
+  - name: Claude (Anthropic)
+    protocol: anthropic
+    api_key: sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    model: claude-3-7-sonnet-latest   # thinking 需支持扩展思考的模型（如 3.7 sonnet / opus 4）
+    thinking: true   # 仅 anthropic 生效；开启扩展思考（思考内容接收即丢弃，不展示）
+
+  # OpenAI / 兼容端点示例（去掉行首 # 启用）：
+  # - name: GPT-4o
+  #   protocol: openai
+  #   api_key: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  #   model: gpt-4o
+  #   base_url: https://api.openai.com/v1   # 可选；接入兼容端点时填此处
+  #   thinking: false   # openai 协议忽略此字段

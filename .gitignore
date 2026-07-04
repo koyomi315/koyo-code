@@ -1,0 +1,39 @@
+# 真实配置含 API 密钥，不入库
+.koyocode/config.yaml
+
+# 环境变量 / 密钥（兜底，防止误提交）
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# uv：本项目为应用，uv.lock 入库以保证可复现构建
+
+# 测试与缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 日志
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code 本地设置（团队共享的 settings.json 入库）
+.claude/settings.local.json
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
