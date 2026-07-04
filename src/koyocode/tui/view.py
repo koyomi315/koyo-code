@@ -24,7 +24,7 @@ def assistant_block(reply: str, elapsed_s: int | None = None) -> Group:
     """助手回复块：圆点 + Markdown 渲染 + 可选总耗时。"""
     parts: list[RenderableType] = [Text("●", style="cyan"), Markdown(reply)]
     if elapsed_s is not None:
-        parts.append(Text(f"  ✓ {elapsed_s}s", style="dim"))
+        parts.append(Text(f"  √ {elapsed_s}s", style="dim"))
     return Group(*parts)
 
 
@@ -53,14 +53,14 @@ def tool_line(name: str, args: str) -> Text:
 
 
 def tool_result_summary(result: str, is_error: bool) -> Padding:
-    """工具结果摘要：⎿ 前缀 + 缩进，UI 截断约 8 行（AC13/N5）。"""
+    """工具结果摘要：└ 前缀 + 缩进，UI 截断约 8 行（AC13/N5）。"""
     lines = result.splitlines()
     if len(lines) > _TOOL_RESULT_MAX_LINES:
         body = "\n".join(lines[:_TOOL_RESULT_MAX_LINES]) + "\n[…]"
     else:
         body = result
     style = "bold red" if is_error else "dim"
-    return Padding(Text(f"⎿ {body}", style=style), (0, 0, 0, 2))
+    return Padding(Text(f"└ {body}", style=style), (0, 0, 0, 2))
 
 
 def render_statusbar(name: str, model: str) -> Table:
