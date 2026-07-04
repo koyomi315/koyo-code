@@ -1,6 +1,9 @@
 # 真实配置含 API 密钥，不入库
 .koyocode/config.yaml
 
+# 规格文档（内部使用，暂不入库）
+koyospec/
+
 # 环境变量 / 密钥（兜底，防止误提交）
 .env
 .env.*
