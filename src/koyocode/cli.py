@@ -7,6 +7,7 @@ banner 由 TUI 在 ``on_mount`` 时写入 ``RichLog``（一次性），故此处
 import sys
 
 from koyocode.config import ConfigError, load
+from koyocode.tool import new_default_registry
 from koyocode.tui import KoyoCodeApp
 
 CONFIG_PATH = ".koyocode/config.yaml"
@@ -28,7 +29,8 @@ def main() -> None:
         print(f"koyoCode: {e}", file=sys.stderr)
         sys.exit(1)
 
-    app = KoyoCodeApp(cfg.providers)
+    registry = new_default_registry()
+    app = KoyoCodeApp(cfg.providers, registry)
     try:
         app.run()
     except KeyboardInterrupt:
