@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "KoyoCode —— 一个 Claude Code 风格的终端 AI 编程助手"
 requires-python = ">=3.12"
 dependencies = [
-    "textual>=0.80",
+    "textual>=8.2.8",
     "rich>=13",
     "anthropic>=0.40",
     "openai>=1.50",
