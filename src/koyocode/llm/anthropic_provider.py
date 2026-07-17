@@ -20,7 +20,7 @@ from collections.abc import AsyncIterator
 import anthropic
 
 from koyocode.config import ProviderConfig
-from koyocode.llm import Message, StreamEvent, ToolCall, ToolDefinition
+from koyocode.llm import Message, StreamEvent, ToolCall, ToolDefinition, Usage
 from koyocode.prompt import SYSTEM_PROMPT
 
 _MAX_TOKENS = 4096
@@ -38,6 +38,13 @@ def _to_anthropic_tools(tools: list[ToolDefinition]) -> list[dict]:
 def _has_tool_history(msgs: list[Message]) -> bool:
     """消息历史中是否含工具调用/结果回合（用于决定是否关闭 thinking）。"""
     return any(m.tool_calls or m.tool_results for m in msgs)
+
+
+def _effective_system(suffix: str) -> str:
+    """拼出实际下发的 system 提示：``suffix`` 为空即内置 ``SYSTEM_PROMPT``。"""
+    if not suffix:
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT + "\n\n" + suffix
 
 
 def _to_anthropic_messages(msgs: list[Message]) -> list[dict]:
@@ -103,11 +110,12 @@ class AnthropicProvider:
         self,
         msgs: list[Message],
         tools: list[ToolDefinition],
+        system_suffix: str = "",
     ) -> AsyncIterator[StreamEvent]:
         params: dict = {
             "model": self._cfg.model,
             "max_tokens": _MAX_TOKENS,
-            "system": SYSTEM_PROMPT,
+            "system": _effective_system(system_suffix),
             "messages": _to_anthropic_messages(msgs),
         }
         tool_defs = _to_anthropic_tools(tools)
@@ -139,6 +147,10 @@ class AnthropicProvider:
                                     input=json.dumps(block.input),
                                 )
                             )
+                usage = Usage(
+                    input_tokens=final_message.usage.input_tokens,
+                    output_tokens=final_message.usage.output_tokens,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — 任意运行时错误均转为 err 事件
@@ -146,4 +158,5 @@ class AnthropicProvider:
             return
         if calls:
             yield StreamEvent(tool_calls=calls)
+        yield StreamEvent(usage=usage)
         yield StreamEvent(done=True)

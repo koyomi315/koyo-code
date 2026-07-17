@@ -32,3 +32,7 @@ class Conversation:
     def messages(self) -> list[Message]:
         """返回历史的副本（修改不影响内部状态）。"""
         return list(self._messages)
+
+    def last_role(self) -> str:
+        """返回最后一条消息的 role；空历史返回 ``""``。"""
+        return self._messages[-1].role if self._messages else ""

@@ -33,7 +33,7 @@ class FakeProvider:
     def model(self):
         return self._model
 
-    async def stream(self, msgs, tools):  # type: ignore[no-untyped-def]
+    async def stream(self, msgs, tools, system_suffix=""):  # type: ignore[no-untyped-def]
         for e in self._events:
             await asyncio.sleep(0)
             yield e
@@ -545,7 +545,7 @@ class _ScriptedFakeProvider:
     def model(self):
         return "fake-1"
 
-    async def stream(self, msgs, tools):  # type: ignore[no-untyped-def]
+    async def stream(self, msgs, tools, system_suffix=""):  # type: ignore[no-untyped-def]
         script = self._scripts[self._i]
         self._i += 1
         for e in script:

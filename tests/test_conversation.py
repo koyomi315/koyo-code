@@ -9,6 +9,18 @@ def test_empty() -> None:
     assert c.messages() == []
 
 
+def test_last_role() -> None:
+    c = Conversation()
+    assert c.last_role() == ""
+    c.add_user("hi")
+    assert c.last_role() == "user"
+    c.add_assistant_with_tool_calls("", [ToolCall(id="c1", name="read_file", input="{}")])
+    c.add_tool_results([ToolResult(tool_call_id="c1", content="ok")])
+    assert c.last_role() == "tool"
+    c.add_assistant("done")
+    assert c.last_role() == "assistant"
+
+
 def test_add_and_order() -> None:
     c = Conversation()
     c.add_user("hi")

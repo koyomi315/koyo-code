@@ -36,6 +36,9 @@ class EditFileTool:
             "required": ["path", "old_string", "new_string"],
         }
 
+    def read_only(self) -> bool:
+        return False
+
     async def execute(self, args: str) -> Result:
         try:
             data = json.loads(args) if args.strip() else {}

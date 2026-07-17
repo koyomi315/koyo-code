@@ -23,17 +23,24 @@ from textual.widgets import Markdown, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from koyocode import __version__
-from koyocode.agent import Agent, Phase
+from koyocode.agent import Agent, Mode, Phase
 from koyocode.config import ProviderConfig
 from koyocode.conversation import Conversation
 from koyocode.llm import Provider, new_provider
-from koyocode.prompt import render_banner
+from koyocode.prompt import EXECUTE_DIRECTIVE, render_banner
 from koyocode.tool import Registry, new_default_registry
 
 _TOOL_RESULT_MAX_LINES = 8
 _COPY_FEEDBACK_TIMEOUT = 2.0
 _SelectionPoint = tuple[int, int] | None
 _SelectionFingerprint = tuple[tuple[int, _SelectionPoint, _SelectionPoint], ...]
+
+
+def _fmt_tokens(n: int) -> str:
+    """紧凑格式化 token 计数：千位以上显示为 ``1.2k``。"""
+    if n < 1000:
+        return str(n)
+    return f"{n / 1000:.1f}k"
 
 
 class SessionState(Enum):
@@ -86,6 +93,7 @@ class KoyoCodeApp(App):
     .assistant-marker { color: cyan; }
     .assistant-message { padding: 0; margin: 0 0 1 0; }
     .elapsed-line { color: $text-muted; }
+    .notice-message { color: $text-muted; }
     .tool-line { text-style: bold; color: cyan; }
     .tool-result { color: $text-muted; }
     .tool-error { color: $error; text-style: bold; }
@@ -107,7 +115,10 @@ class KoyoCodeApp(App):
     .hidden { display: none; }
     """
 
-    BINDINGS = [Binding("ctrl+c", "quit", "Quit", priority=True)]
+    BINDINGS = [
+        Binding("ctrl+c", "quit", "Quit", priority=True),
+        Binding("escape", "cancel_turn", "Cancel", show=False, priority=True),
+    ]
 
     def __init__(self, providers: list[ProviderConfig], registry: Registry | None = None) -> None:
         super().__init__()
@@ -117,8 +128,13 @@ class KoyoCodeApp(App):
         self.conv = Conversation()
         self.cur_reply = ""
         self.turn_start = 0.0
+        self.mode: Mode = Mode.NORMAL
+        self.iter = 0
+        self.usage_in = 0
+        self.usage_out = 0
+        self.turn_cancel: asyncio.Event | None = None
         self._tool_registry: Registry = registry or new_default_registry()
-        self._cur_tool: ToolDisplay | None = None
+        self.cur_tools: list[ToolDisplay] = []
         self._stream_task: asyncio.Task[None] | None = None
         self._timer: Timer | None = None
         self._copy_feedback_timer: Timer | None = None
@@ -173,10 +189,13 @@ class KoyoCodeApp(App):
             self.query_one("#input", InputArea).focus()
 
     def _update_statusbar(self) -> None:
-        if self.provider is not None:
-            self.query_one("#statusbar", Static).update(
-                f"● {self.provider.name}    {self.provider.model}"
-            )
+        if self.provider is None:
+            return
+        mode_badge = "  [PLAN]" if self.mode == Mode.PLAN else ""
+        usage = f"  ↑{_fmt_tokens(self.usage_in)} ↓{_fmt_tokens(self.usage_out)} tok"
+        self.query_one("#statusbar", Static).update(
+            f"● {self.provider.name}{mode_badge}    {self.provider.model}{usage}"
+        )
 
     def _history(self) -> VerticalScroll:
         return self.query_one("#history", VerticalScroll)
@@ -278,16 +297,40 @@ class KoyoCodeApp(App):
         self.submit(event.value)
 
     def submit(self, text: str) -> None:
-        if text.strip() == "/exit":
+        stripped = text.strip()
+        if stripped == "/exit":
             self._quit()
             return
         if self.state != SessionState.IDLE or self.provider is None:
             return
+        if stripped == "/plan":
+            self.query_one("#input", InputArea).clear()
+            self.mode = Mode.PLAN
+            self._append_history_text(
+                "● 已进入计划模式（仅只读工具，/do 切回执行）", "notice-message"
+            )
+            self._update_statusbar()
+            return
+        if stripped == "/do":
+            self.query_one("#input", InputArea).clear()
+            self._append_history_text("● /do", "user-message")
+            self.mode = Mode.NORMAL
+            self.conv.add_user(EXECUTE_DIRECTIVE)
+            self._update_statusbar()
+            self._start_turn()
+            return
         self.conv.add_user(text)
         self._append_history_text(f"● {text}", "user-message")
         self.query_one("#input", InputArea).clear()
+        self._start_turn()
+
+    def _start_turn(self) -> None:
+        """启动一轮 Agent Loop：重置本轮状态、发起 stream task。"""
         self.cur_reply = ""
+        self.cur_tools = []
+        self.iter = 0
         self.turn_start = time.monotonic()
+        self.turn_cancel = asyncio.Event()
         self.state = SessionState.STREAMING
         self.query_one("#streaming", Static).remove_class("hidden")
         self._render_streaming()
@@ -295,13 +338,16 @@ class KoyoCodeApp(App):
         self._timer = self.set_interval(0.1, self._tick)
 
     async def _consume_agent_events(self) -> None:
-        """消费 ``Agent.run`` 事件流，分派文本/工具/done/err 到 UI 与历史。"""
+        """消费 ``Agent.run`` 事件流，分派文本/工具/用量/轮次/通知/done/err 到 UI 与历史。"""
         assert self.provider is not None
+        assert self.turn_cancel is not None
         agent = Agent(self.provider, self._tool_registry)
+        finished = False
         try:
-            async for ev in agent.run(self.conv):
+            async for ev in agent.run(self.conv, self.mode, self.turn_cancel):
                 if ev.err is not None:
                     self._finish_with_error(ev.err)
+                    finished = True
                     return
                 if ev.tool is not None:
                     if ev.tool.phase == Phase.START:
@@ -311,33 +357,50 @@ class KoyoCodeApp(App):
                             ev.tool.name, ev.tool.args, ev.tool.result, ev.tool.is_error
                         )
                     continue
+                if ev.usage is not None:
+                    self.usage_in += ev.usage.input
+                    self.usage_out += ev.usage.output
+                    self._update_statusbar()
+                if ev.notice:
+                    self._append_history_text(f"● {ev.notice}", "notice-message")
+                if ev.iter:
+                    self.iter = ev.iter
+                    self._render_streaming()
                 if ev.text:
                     self.cur_reply += ev.text
                     self._render_streaming()
                 if ev.done:
                     # agent 已把最终答复写入 conv；此处仅渲染到历史区。
                     self._finish_turn(self.cur_reply)
+                    finished = True
                     return
         except asyncio.CancelledError:
             # 退出时取消流：静默，应用即将退出，不触碰 widget。
+            finished = True
             raise
         except Exception as e:  # noqa: BLE001 — 兜底，保证不中断会话
             self._finish_with_error(e)
+            finished = True
+        finally:
+            if not finished:
+                # 用户取消：generator 未发 done 即终止，此处仍需收尾回到 IDLE。
+                self._finish_turn(self.cur_reply)
 
     def _on_tool_start(self, name: str, args: str) -> None:
-        """工具开始：先提交 preamble 文本到滚动历史，再置 Running 指示。"""
+        """工具开始：先提交 preamble 文本到滚动历史，再加入 Running 指示队列。"""
         if self.cur_reply:
             self._append_assistant_message(self.cur_reply)
             self.cur_reply = ""
-        self._cur_tool = ToolDisplay(name=name, args=args)
+        self.cur_tools.append(ToolDisplay(name=name, args=args))
         self._render_streaming()
 
     def _on_tool_end(self, name: str, args: str, result: str, is_error: bool) -> None:
-        """工具结束：写工具行 + 结果摘要到滚动历史，清 Running 指示。"""
+        """工具结束：写工具行 + 结果摘要到滚动历史，从 Running 队首弹出。"""
+        if self.cur_tools:
+            self.cur_tools.pop(0)
         self._append_history_text(f"● {name}({args})", "tool-line")
         result_class = "tool-error" if is_error else "tool-result"
         self._append_history_text(self._tool_result_text(result), result_class)
-        self._cur_tool = None
         self._render_streaming()
 
     def _tick(self) -> None:
@@ -346,13 +409,16 @@ class KoyoCodeApp(App):
 
     def _render_streaming(self) -> None:
         elapsed = int(time.monotonic() - self.turn_start)
-        if self._cur_tool is not None:
-            view = f"● {self._cur_tool.name}({self._cur_tool.args}) Running... ({elapsed}s)"
+        if self.cur_tools:
+            view = "\n".join(
+                f"● {t.name}({t.args}) Running... ({elapsed}s)" for t in self.cur_tools
+            )
         else:
+            round_hint = f" · 第 {self.iter} 轮" if self.iter > 0 else ""
             if self.cur_reply:
-                view = f"{self.cur_reply}\nImagining... ({elapsed}s)"
+                view = f"{self.cur_reply}\nImagining... ({elapsed}s{round_hint})"
             else:
-                view = f"Imagining... ({elapsed}s)"
+                view = f"Imagining... ({elapsed}s{round_hint})"
         self.query_one("#streaming", Static).update(view)
 
     def _finish_turn(self, reply: str) -> None:
@@ -376,7 +442,9 @@ class KoyoCodeApp(App):
             self._timer = None
         self._stream_task = None
         self.cur_reply = ""
-        self._cur_tool = None
+        self.cur_tools = []
+        self.iter = 0
+        self.turn_cancel = None
         streaming = self.query_one("#streaming", Static)
         streaming.update("")
         streaming.add_class("hidden")
@@ -406,4 +474,13 @@ class KoyoCodeApp(App):
     async def action_quit(self) -> None:
         if self._copy_selected_text():
             return
+        if self.state == SessionState.STREAMING and self.turn_cancel is not None:
+            # 流式态 Ctrl+C：取消本轮，不退出程序（F7）。
+            self.turn_cancel.set()
+            return
         self._quit()
+
+    def action_cancel_turn(self) -> None:
+        """Esc：流式态取消本轮，不退出程序（F7）；其余状态忽略。"""
+        if self.state == SessionState.STREAMING and self.turn_cancel is not None:
+            self.turn_cancel.set()
