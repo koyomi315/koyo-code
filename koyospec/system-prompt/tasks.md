@@ -24,7 +24,7 @@
 
 ---
 
-## T1: prompt 模块化装配**文件：** `src/koyocode/prompt/modules.py`、`src/koyocode/prompt/__init__.py`
+## [x] T1: prompt 模块化装配**文件：** `src/koyocode/prompt/modules.py`、`src/koyocode/prompt/__init__.py`
 **依赖：** 无
 **步骤：**
 1. 在 `modules.py` 定义 `@dataclass(frozen=True) class Module: name: str; priority: int; content: str`。
@@ -44,7 +44,7 @@
 
 **验证：** `python -c "from koyocode.prompt import build_system_prompt; print(build_system_prompt())"` 观察七模块按序、空槽不留空行；`ruff check src/koyocode/prompt/` 无告警。
 
-## T2: 环境采集与渲染**文件：** `src/koyocode/prompt/environment.py`
+## [x] T2: 环境采集与渲染**文件：** `src/koyocode/prompt/environment.py`
 **依赖：** 无
 **步骤：**
 1. 定义 `@dataclass class Environment: working_dir: str; platform: str; date: str; git_status: str; version: str; model: str`。
@@ -56,7 +56,7 @@
 
 **验证：** 单测在临时非 git 目录 `gather_environment` 得 `git_status == ""` 且不抛异常；`render()` 含 cwd/platform/date。
 
-## T3: 补充消息与规划提醒构造**文件：** `src/koyocode/prompt/reminder.py`
+## [x] T3: 补充消息与规划提醒构造**文件：** `src/koyocode/prompt/reminder.py`
 **依赖：** 无
 **步骤：**
 1. `def system_reminder(body: str) -> str`：返回 `f"<system-reminder>\n{body}\n</system-reminder>"`。
@@ -66,7 +66,7 @@
 
 **验证：** 单测断言 `plan_reminder(True)` 含 `<system-reminder>` 与完整文案；`plan_reminder(False)` 用精简文案。
 
-## T4: prompt 单测**文件：** `tests/test_prompt.py`
+## [x] T4: prompt 单测**文件：** `tests/test_prompt.py`
 **依赖：** T1, T2, T3
 **步骤：**
 1. 装配顺序：断言 `build_system_prompt()` 中身份段出现在工具使用段之前；模块以空行分隔。
