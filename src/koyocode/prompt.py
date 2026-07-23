@@ -15,8 +15,18 @@ SYSTEM_PROMPT = """\
   精确替换用 edit_file、执行命令用 bash、按模式查文件名用 glob、按正则搜内容用 grep。
 - 调用工具时给出明确、合法的 JSON 参数；拿到工具结果后据此给出简洁答复，
   不要原样复述工具返回的大段内容。
-- 本轮工具执行完毕后给出最终答复，单轮内不再发起新一轮工具调用。
+- 持续调用工具推进任务，直到任务完成后再给出最终简洁答复，不要每完成一步就停下来等用户确认。
 """
+
+# PLAN_MODE_REMINDER：Plan Mode 系统提示后缀，拼接到 SYSTEM_PROMPT 之后。
+# 当前仅注入只读工具定义（read_file/glob/grep），此提示进一步约束模型不要尝试写/执行。
+PLAN_MODE_REMINDER = """\
+当前处于计划模式：你只能使用只读工具（read_file、glob、grep）调研代码库，
+不得写文件、改文件或执行命令。请据调研结果产出一份清晰的分步执行计划，
+写完计划后停下，等待用户用 /do 批准后再动手执行。"""
+
+# EXECUTE_DIRECTIVE：/do 注入的用户消息，指示模型按上文已确认的计划开始执行。
+EXECUTE_DIRECTIVE = "请按上面的计划开始执行。"
 
 CAT_BANNER = r"""  /\_/\
  ( o.o )
@@ -30,7 +40,7 @@ def render_banner(version: str, cwd: str) -> str:
         f"  koyoCode v{version}",
         f"  cwd: {cwd}",
         "",
-        "  ● 就绪：输入消息后 Enter 发送 · Alt+Enter 换行 · /exit 或 Ctrl+C 退出",
+        "  ● 就绪：Enter 发送 · Alt+Enter 换行 · /plan /do 切换模式 · /exit 或 Ctrl+C 退出",
         "",
     ]
     return "\n".join(lines)

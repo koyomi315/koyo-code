@@ -32,6 +32,9 @@ class ReadFileTool:
             "required": ["path"],
         }
 
+    def read_only(self) -> bool:
+        return True
+
     async def execute(self, args: str) -> Result:
         try:
             data = json.loads(args) if args.strip() else {}

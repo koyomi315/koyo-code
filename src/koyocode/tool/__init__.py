@@ -44,6 +44,10 @@ class Tool(Protocol):
         """手写 JSON Schema（type/properties/required/description）。"""
         ...
 
+    def read_only(self) -> bool:
+        """True=只读工具，可并发执行 & Plan Mode 放行。"""
+        ...
+
     async def execute(self, args: str) -> Result:
         """执行工具；``args`` 为 raw JSON 字符串，超时由外部 ``asyncio.wait_for`` 控制。"""
         ...
@@ -93,6 +97,23 @@ class Registry:
             )
             for name in self._order
         ]
+
+    def read_only_definitions(self) -> list[ToolDefinition]:
+        """Plan Mode：仿 ``definitions()``，只导出 ``read_only()`` 为真的工具定义。"""
+        return [
+            ToolDefinition(
+                name=name,
+                description=self._tools[name].description(),
+                input_schema=self._tools[name].parameters(),
+            )
+            for name in self._order
+            if self._tools[name].read_only()
+        ]
+
+    def is_read_only(self, name: str) -> bool:
+        """分批判定：未知工具按有副作用处理，返回 ``False``。"""
+        t = self._tools.get(name)
+        return t is not None and t.read_only()
 
     async def execute(self, name: str, args: str, timeout: float = DEFAULT_TIMEOUT) -> Result:
         """按名执行工具，受超时保护；任何失败包成 ``Result(is_error=True)``。

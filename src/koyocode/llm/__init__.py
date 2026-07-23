@@ -15,9 +15,10 @@ from typing import Any, Literal, Protocol
 from koyocode.config import ProviderConfig
 
 # 消息角色常量：ROLE_TOOL 携带工具执行结果回合。
-ROLE_USER = "user"
-ROLE_ASSISTANT = "assistant"
-ROLE_TOOL = "tool"
+# 标注为各自 Literal 以便传入 Message.role: Literal[...] 时不被推断为宽 str。
+ROLE_USER: Literal["user"] = "user"
+ROLE_ASSISTANT: Literal["assistant"] = "assistant"
+ROLE_TOOL: Literal["tool"] = "tool"
 
 
 @dataclass
@@ -40,6 +41,16 @@ class ToolResult:
     tool_call_id: str
     content: str
     is_error: bool = False
+
+
+@dataclass
+class Usage:
+    """协议无关地承载一轮请求的 token 用量。"""
+
+    input_tokens: int = 0
+    """本轮请求输入（含完整历史）token 数。"""
+    output_tokens: int = 0
+    """本轮响应输出 token 数。"""
 
 
 @dataclass
@@ -75,10 +86,12 @@ class StreamEvent:
 
     四态语义：``text`` 为正文增量；``tool_calls`` 非空表示本轮模型请求执行这些
     工具（在 ``done`` 之前发出）；``done`` 表示本轮正常结束；``err`` 与 ``done`` 互斥。
+    ``usage`` 非空：本轮 token 用量，在 ``done`` 之前一次性发出。
     """
 
     text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: Usage | None = None
     done: bool = False
     err: Exception | None = None
 
@@ -100,13 +113,16 @@ class Provider(Protocol):
         self,
         msgs: list[Message],
         tools: list[ToolDefinition],
+        system_suffix: str = "",
     ) -> AsyncIterator[StreamEvent]:
         """发起一轮流式对话；内部注入 system prompt 与 thinking 配置。
 
-        ``tools`` 为工具定义列表（空表示本次不带工具）；思考增量内部丢弃；
-        以 async generator 吐出 ``StreamEvent``（含可能的 ``tool_calls``）。
-        调用方 cancel 对应 task 时，``async for`` 抛 ``CancelledError``，
-        SDK 流由 ``async with`` 上下文自动清理。
+        ``tools`` 为工具定义列表（空表示本次不带工具）；``system_suffix`` 非空时
+        拼接到内置 ``SYSTEM_PROMPT`` 之后（Plan Mode 计划态约束），为空即普通模式；
+        思考增量内部丢弃；以 async generator 吐出 ``StreamEvent``（含可能的
+        ``tool_calls`` 与本轮结束前一次性上抛的 ``usage``）。调用方 cancel 对应
+        task 时，``async for`` 抛 ``CancelledError``，SDK 流由 ``async with``
+        上下文自动清理。
         """
         ...
 

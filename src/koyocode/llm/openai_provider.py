@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator
 import openai
 
 from koyocode.config import ProviderConfig
-from koyocode.llm import Message, StreamEvent, ToolCall, ToolDefinition
+from koyocode.llm import Message, StreamEvent, ToolCall, ToolDefinition, Usage
 from koyocode.prompt import SYSTEM_PROMPT
 
 
@@ -36,9 +36,13 @@ def _to_openai_tools(tools: list[ToolDefinition]) -> list[dict]:
     ]
 
 
-def _to_openai_messages(msgs: list[Message]) -> list[dict]:
-    """把协议无关 ``Message`` 列表转为 openai messages 参数（首条为 system）。"""
-    out: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+def _to_openai_messages(msgs: list[Message], system_suffix: str = "") -> list[dict]:
+    """把协议无关 ``Message`` 列表转为 openai messages 参数（首条为 system）。
+
+    ``system_suffix`` 非空时拼接到内置 ``SYSTEM_PROMPT`` 之后（Plan Mode）。
+    """
+    system = SYSTEM_PROMPT if not system_suffix else SYSTEM_PROMPT + "\n\n" + system_suffix
+    out: list[dict] = [{"role": "system", "content": system}]
     for m in msgs:
         if m.role == "user":
             out.append({"role": "user", "content": m.content})
@@ -88,13 +92,16 @@ class OpenAIProvider:
         self,
         msgs: list[Message],
         tools: list[ToolDefinition],
+        system_suffix: str = "",
     ) -> AsyncIterator[StreamEvent]:
-        messages = _to_openai_messages(msgs)
+        messages = _to_openai_messages(msgs, system_suffix)
+        usage: Usage | None = None
         try:
             create_kwargs: dict = {
                 "model": self._cfg.model,
                 "messages": messages,
                 "stream": True,
+                "stream_options": {"include_usage": True},
             }
             tool_defs = _to_openai_tools(tools)
             if tool_defs:
@@ -104,6 +111,13 @@ class OpenAIProvider:
             tool_calls_buf: dict[int, dict[str, str]] = {}
             async for chunk in stream:
                 if not chunk.choices:
+                    # include_usage 开启后，流末尾出现一个 choices 为空但带
+                    # chunk.usage 的 chunk；此 chunk 无 delta 可读，跳过文本分支。
+                    if chunk.usage is not None:
+                        usage = Usage(
+                            input_tokens=chunk.usage.prompt_tokens,
+                            output_tokens=chunk.usage.completion_tokens,
+                        )
                     continue
                 delta = chunk.choices[0].delta
                 if delta.content:
@@ -134,4 +148,5 @@ class OpenAIProvider:
         ]
         if calls:
             yield StreamEvent(tool_calls=calls)
+        yield StreamEvent(usage=usage)
         yield StreamEvent(done=True)

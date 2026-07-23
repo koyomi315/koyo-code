@@ -38,6 +38,16 @@ def test_registry_get_hit_and_miss() -> None:
     assert reg.get("nope") is None
 
 
+def test_registry_read_only_definitions_and_is_read_only() -> None:
+    reg = new_default_registry()
+    assert [d.name for d in reg.read_only_definitions()] == ["read_file", "glob", "grep"]
+    for name in ("read_file", "glob", "grep"):
+        assert reg.is_read_only(name) is True
+    for name in ("write_file", "edit_file", "bash"):
+        assert reg.is_read_only(name) is False
+    assert reg.is_read_only("nope") is False
+
+
 def test_registry_duplicate_raises() -> None:
     reg = Registry()
     reg.register(ReadFileTool())
