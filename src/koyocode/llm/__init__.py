@@ -15,9 +15,10 @@ from typing import Any, Literal, Protocol
 from koyocode.config import ProviderConfig
 
 # 消息角色常量：ROLE_TOOL 携带工具执行结果回合。
-ROLE_USER = "user"
-ROLE_ASSISTANT = "assistant"
-ROLE_TOOL = "tool"
+# 标注为各自 Literal 以便传入 Message.role: Literal[...] 时不被推断为宽 str。
+ROLE_USER: Literal["user"] = "user"
+ROLE_ASSISTANT: Literal["assistant"] = "assistant"
+ROLE_TOOL: Literal["tool"] = "tool"
 
 
 @dataclass
