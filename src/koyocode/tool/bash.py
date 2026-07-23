@@ -22,7 +22,10 @@ class BashTool:
         return "bash"
 
     def description(self) -> str:
-        return "在工作目录下执行 shell 命令；返回 stdout、stderr 与退出码。"
+        return (
+            "在工作目录下执行 shell 命令；返回 stdout、stderr 与退出码。"
+            "读文件、找文件、搜内容请优先用 read_file/glob/grep，不要用 bash 拼凑。"
+        )
 
     def parameters(self) -> dict[str, Any]:
         return {

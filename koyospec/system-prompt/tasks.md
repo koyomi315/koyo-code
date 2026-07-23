@@ -77,7 +77,7 @@
 
 **验证：** `pytest tests/test_prompt.py` 通过。
 
-## T5: 工具描述双重强化**文件：** `src/koyocode/tool/edit_file.py`、`src/koyocode/tool/bash.py`
+## [x] T5: 工具描述双重强化**文件：** `src/koyocode/tool/edit_file.py`、`src/koyocode/tool/bash.py`
 **依赖：** 无
 **步骤：**
 1. `edit_file.DESCRIPTION` 末补：「编辑前请先用 `read_file` 读取目标文件，确认 `old_string` 唯一。」
