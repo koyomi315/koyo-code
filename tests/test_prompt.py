@@ -21,7 +21,7 @@ def test_build_system_prompt_identity_before_tools() -> None:
     """身份段出现在工具使用段之前，模块间以空行分隔。"""
     sp = build_system_prompt()
     identity_idx = sp.find("KoyoCode")
-    tools_idx = sp.find("## Tool usage")
+    tools_idx = sp.find("## 工具使用")
     assert identity_idx != -1
     assert tools_idx != -1
     assert identity_idx < tools_idx
@@ -33,12 +33,12 @@ def test_fixed_module_headings_present() -> None:
     """七个固定模块标题均出现在装配结果中。"""
     sp = build_system_prompt()
     for heading in (
-        "## Boundaries",
-        "## Task execution",
-        "## When to act",
-        "## Tool usage",
-        "## Tone and style",
-        "## Text output",
+        "## 边界",
+        "## 任务执行（ReAct）",
+        "## 何时行动",
+        "## 工具使用",
+        "## 语气与风格",
+        "## 文本输出",
     ):
         assert heading in sp
 
@@ -70,7 +70,7 @@ def test_assemble_orders_by_priority() -> None:
     sp = assemble_system(fixed_modules() + [extra] + optional_modules())
     idx_identity = sp.find("KoyoCode")
     idx_extra = sp.find("EXTRA MODULE")
-    idx_constraints = sp.find("## Boundaries")
+    idx_constraints = sp.find("## 边界")
     # priority 15 落在 identity(10) 与 constraints(20) 之间
     assert idx_identity < idx_extra < idx_constraints
 
@@ -94,13 +94,13 @@ def test_double_reinforcement_in_prompt() -> None:
     """系统提示含「优先用专用工具」「编辑前必先读」的表述。"""
     sp = build_system_prompt()
     # 优先用专用工具而非 shell 拼凑
-    assert "Prefer dedicated tools" in sp
+    assert "优先使用专用工具" in sp
     assert "read_file" in sp
     assert "glob" in sp
     assert "grep" in sp
     # 编辑文件前必先读
-    assert "read_file before editing" in sp
-    assert "old_string is unique" in sp
+    assert "编辑文件前必须先用 read_file 读取" in sp
+    assert "old_string 唯一" in sp
 
 
 # ───────── 环境信息（AC3/F2）─────────
