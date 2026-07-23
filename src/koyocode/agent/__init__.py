@@ -1,8 +1,12 @@
 """Agent ReAct 循环编排（F1/F2/F5/F6/F10/AC1-AC4/AC8/AC9/AC13）。
 
-每一轮：带工具定义发起流式请求 → 收集本轮文本/工具调用/用量 → 若模型请求了
+每一轮：带工具定义发起流式请求 -> 收集本轮文本/工具调用/用量 -> 若模型请求了
 工具则保序分批（连续只读并发、其余串行）执行并把结果回灌进历史，进入下一轮；
 若模型给出无工具调用的纯文本，该文本即最终答复，循环结束。
+
+ch05 扩展：每次 ``run`` 起始采集环境、装配稳定系统提示；每轮按 ``mode + iter``
+计算 reminder（规划模式按轮次详略，F7），组装 ``llm.Request`` 发起请求；缓存用量
+透传到 ``Event.usage``。稳定系统提示普通/规划一致（规划提醒已移出系统通道）。
 
 停止条件（各自干净收尾，保持历史合法）：自然完成、迭代上限、用户取消、
 连续多轮只请求未知工具、流出错。对外只吐 ``Event`` 异步流，供 TUI 渲染，
@@ -15,10 +19,18 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 
+from koyocode import prompt
 from koyocode.conversation import Conversation
-from koyocode.llm import ROLE_ASSISTANT, Provider, ToolCall, ToolDefinition, ToolResult
+from koyocode.llm import (
+    ROLE_ASSISTANT,
+    Provider,
+    Request,
+    System,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+)
 from koyocode.llm import Usage as LLMUsage
-from koyocode.prompt import PLAN_MODE_REMINDER
 from koyocode.tool import DEFAULT_TIMEOUT, Registry
 
 _ARGS_PREVIEW_LEN = 80
@@ -28,6 +40,8 @@ MAX_ITERATIONS = 25
 """迭代上限兜底，避免失控（F2）。"""
 MAX_UNKNOWN_RUN = 3
 """连续「整轮只产生未知工具调用」的迭代数上限（F2）。"""
+PLAN_REMINDER_INTERVAL = 4
+"""规划模式完整提醒的重复间隔轮次（F7）：首轮完整，之后每隔此数重复一次。"""
 
 NOTICE_MAX_ITER = "（已达最大迭代轮数 25，自动停止；可继续发消息推进。）"
 NOTICE_UNKNOWN_TOOLS = "（连续多轮只请求到未注册的工具，自动停止。）"
@@ -43,7 +57,7 @@ class Phase(Enum):
 
 
 class Mode(IntEnum):
-    """Agent Loop 的两种工具集/系统提示模式（F10）。"""
+    """Agent Loop 的两种工具集模式（规划模式仅放开只读工具，F7）。"""
 
     NORMAL = 0
     PLAN = 1
@@ -62,10 +76,12 @@ class ToolEvent:
 
 @dataclass
 class Usage:
-    """一轮请求的 token 用量（语义同 ``llm.Usage``，Agent 对外事件用此类型）。"""
+    """一轮请求的 token 用量（含缓存写/读，透传自 ``llm.Usage``，供 smoke/TUI 打印）。"""
 
     input: int = 0
     output: int = 0
+    cache_write: int = 0
+    cache_read: int = 0
 
 
 @dataclass
@@ -119,13 +135,25 @@ async def _stream_once(
     provider: Provider,
     conv: Conversation,
     defs: list[ToolDefinition],
-    suffix: str,
+    sys_text: str,
+    env_text: str,
+    reminder: str,
     cancel: asyncio.Event,
     outcome: _StreamOutcome,
 ) -> AsyncIterator[Event]:
-    """单次流式请求；把结果写入 ``outcome``，转发途中产生的文本增量 / 错误事件。"""
+    """单次流式请求；把结果写入 ``outcome``，转发途中产生的文本增量 / 错误事件。
+
+    组装 ``llm.Request``（messages=持久历史、tools=本轮工具集、system=稳定+环境、
+    reminder=本轮补充），reminder 不写入持久历史（N3），故不影响后续轮次与可恢复性。
+    """
     try:
-        async for se in provider.stream(conv.messages(), defs, suffix):
+        req = Request(
+            messages=conv.messages(),
+            tools=defs,
+            system=System(stable=sys_text, environment=env_text),
+            reminder=reminder,
+        )
+        async for se in provider.stream(req):
             if cancel.is_set():
                 outcome.ok = False
                 return
@@ -142,7 +170,7 @@ async def _stream_once(
                 yield Event(text=se.text)
     except asyncio.CancelledError:
         raise
-    except Exception as e:  # noqa: BLE001 — 任意运行时错误转为 err 事件
+    except Exception as e:  # noqa: BLE001 - 任意运行时错误转为 err 事件
         yield Event(err=e)
         outcome.ok = False
         return
@@ -270,25 +298,28 @@ async def _execute_batched(
 class Agent:
     """持有 provider 与注册中心，执行 ReAct 循环。"""
 
-    def __init__(self, provider: Provider, registry: Registry) -> None:
+    def __init__(self, provider: Provider, registry: Registry, version: str) -> None:
         self._provider = provider
         self._registry = registry
+        self._version = version
 
     async def run(
         self, conv: Conversation, mode: Mode, cancel: asyncio.Event
     ) -> AsyncIterator[Event]:
         """执行 Agent Loop，async generator 吐出事件流。
 
-        ``mode`` 决定工具集与系统提示后缀；``cancel`` 由调用方持有的
-        ``asyncio.Event``，触发 ``cancel.set()`` 即中断本轮（尽快收尾、
+        ``mode`` 决定工具集（规划=只读、普通=全量）；每次 ``run`` 起始采集环境、装配
+        稳定系统提示（普通/规划一致）；每轮按 ``iter`` 计算规划提醒详略（F7）。``cancel``
+        由调用方持有的 ``asyncio.Event``，触发 ``cancel.set()`` 即中断本轮（尽快收尾、
         保持历史合法，可继续对话）。
         """
+        env = prompt.gather_environment(self._version, self._provider.model)
+        sys_text = prompt.build_system_prompt()
+        env_text = env.render()
         if mode == Mode.PLAN:
             defs = self._registry.read_only_definitions()
-            suffix = PLAN_MODE_REMINDER
         else:
             defs = self._registry.definitions()
-            suffix = ""
 
         unknown_run = 0
         for it in range(1, MAX_ITERATIONS + 1):
@@ -297,9 +328,16 @@ class Agent:
                 _ensure_assistant_tail(conv, NOTICE_CANCELLED)
                 return
 
+            # 规划模式按轮次注入 reminder：首轮完整、每隔 PLAN_REMINDER_INTERVAL 重复完整、
+            # 其余轮精简（F7/AC9）；reminder 每轮动态构造、不写入持久历史。
+            reminder = ""
+            if mode == Mode.PLAN:
+                full = it == 1 or (it - 1) % PLAN_REMINDER_INTERVAL == 0
+                reminder = prompt.plan_reminder(full)
+
             stream_outcome = _StreamOutcome()
             async for ev in _stream_once(
-                self._provider, conv, defs, suffix, cancel, stream_outcome
+                self._provider, conv, defs, sys_text, env_text, reminder, cancel, stream_outcome
             ):
                 yield ev
 
@@ -315,6 +353,8 @@ class Agent:
                     usage=Usage(
                         input=stream_outcome.usage.input_tokens,
                         output=stream_outcome.usage.output_tokens,
+                        cache_write=stream_outcome.usage.cache_write,
+                        cache_read=stream_outcome.usage.cache_read,
                     )
                 )
 
@@ -360,6 +400,7 @@ __all__ = [
     "NOTICE_MAX_ITER",
     "NOTICE_STREAM_ERR",
     "NOTICE_UNKNOWN_TOOLS",
+    "PLAN_REMINDER_INTERVAL",
     "Agent",
     "Event",
     "Mode",

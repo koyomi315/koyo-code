@@ -86,7 +86,7 @@
 
 **验证：** `pytest tests/test_tool.py` 仍通过；`ruff check src/koyocode/tool/` 无告警。
 
-## T6: llm 接口改造**文件：** `src/koyocode/llm/__init__.py`
+## [x] T6: llm 接口改造**文件：** `src/koyocode/llm/__init__.py`
 **依赖：** 无（但 T7/T8/T9 依赖本任务）
 **步骤：**
 1. 新增 `@dataclass class System: stable: str = ""; environment: str = ""`、`@dataclass class Request: messages: list[Message] = field(default_factory=list); tools: list[ToolDefinition] = field(default_factory=list); system: System = field(default_factory=System); reminder: str = ""`。
@@ -97,7 +97,7 @@
 
 **验证：** `python -c "from koyocode.llm import Request, System, Usage, Provider"` 不报错；anthropic/openai 适配器在 T7/T8 修复前会 import 失败，预期。
 
-## T7: Anthropic 适配缓存通道 + reminder**文件：** `src/koyocode/llm/anthropic_provider.py`
+## [x] T7: Anthropic 适配缓存通道 + reminder**文件：** `src/koyocode/llm/anthropic_provider.py`
 **依赖：** T6
 **步骤：**
 1. `async def stream(self, req: Request) -> AsyncIterator[StreamEvent]`：
@@ -109,7 +109,7 @@
 
 **验证：** `python -c "from koyocode.llm.anthropic_provider import AnthropicProvider"` 不报错（配合 T8）；smoke anthropic 跑两轮见 `cache_read > 0`（次轮）。
 
-## T8: OpenAI 适配缓存通道 + reminder**文件：** `src/koyocode/llm/openai_provider.py`
+## [x] T8: OpenAI 适配缓存通道 + reminder**文件：** `src/koyocode/llm/openai_provider.py`
 **依赖：** T6
 **步骤：**
 1. `_to_openai_messages(req)`：首条 system 消息 = `req.system.stable`（若 `environment` 非空则拼为 `stable + "\n\n" + environment`）；随后映射历史；`req.reminder` 非空 → 追加 `{"role": "user", "content": req.reminder}`。
@@ -118,7 +118,7 @@
 
 **验证：** import 不报错；smoke openai 兼容端点跑两轮，`cached_tokens` 字段被打印（端点支持则 >0）。
 
-## T9: agent 改造**文件：** `src/koyocode/agent/agent.py`
+## [x] T9: agent 改造**文件：** `src/koyocode/agent/agent.py`
 **依赖：** T1, T2, T3, T6
 **步骤：**
 1. `Agent.__init__(self, provider, registry, version: str)` 加 `self._version = version` 字段。
@@ -136,7 +136,7 @@
 
 **验证：** `python -c "from koyocode.agent.agent import Agent"` 不报错（配合 T10/T11）。
 
-## T10: TUI 与 smoke 接线**文件：** `src/koyocode/tui/stream.py`、`examples/smoke.py`
+## [x] T10: TUI 与 smoke 接线**文件：** `src/koyocode/tui/stream.py`、`examples/smoke.py`
 **依赖：** T9
 **步骤：**
 1. `stream.py` 中改 `Agent(self.provider, self.registry, self.version)`；`/do` 注入仍用 `prompt.EXECUTE_DIRECTIVE`（已迁至 `reminder.py`，但通过 `koyocode.prompt` 包顶层重导出，import 路径不变）。
@@ -144,7 +144,7 @@
 
 **验证：** `python -m koyocode` 在合法配置下正常启动；`python examples/smoke.py` 能跑通。
 
-## T11: agent 单测适配**文件：** `tests/test_agent.py`
+## [x] T11: agent 单测适配**文件：** `tests/test_agent.py`
 **依赖：** T9
 **步骤：**
 1. 修 fake provider：`stream(req)` 实现新签名；记录收到的 `req`（`system.stable/environment`、`tools`、`reminder`）。
@@ -158,7 +158,7 @@
 
 **验证：** `pytest tests/test_agent.py` 通过；`pytest -p no:randomly tests/test_agent.py`（如启用 randomly 插件）。
 
-## T12: 全量编译测试与规范**文件：** —
+## [x] T12: 全量编译测试与规范**文件：** —
 **依赖：** T1–T11
 **步骤：**
 1. `ruff format --check .`（统一格式）。
