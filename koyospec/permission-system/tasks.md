@@ -165,7 +165,7 @@
 
 **验证：** `pytest tests/test_tui.py -q`（带 `pytest-asyncio` + Textual 测试工具）。
 
-## T12: cli / smoke / 配置文件接线**文件：** `src/koyocode/cli.py`、`smoke/main.py`、`.gitignore`、`.koyocode/settings.yaml.example`
+## T12: cli / smoke / 配置文件接线 [x]**文件：** `src/koyocode/cli.py`、`smoke/main.py`、`.gitignore`、`.koyocode/settings.yaml.example`
 **依赖：** T6, T8, T10
 **步骤：**
 1. `cli.py`：`root = str(Path.cwd().resolve())`；`engine, err = permission.new_engine(root)`；`if err is not None: print("权限引擎降级:", err, file=sys.stderr)` 后**继续**（`engine` 必非 None）；`app = tui.new_app(cfg.providers, version, registry, engine)`（沿用既有错误处理）。

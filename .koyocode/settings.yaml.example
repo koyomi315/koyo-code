@@ -1,0 +1,27 @@
+# KoyoCode 权限配置示例（项目级）。
+#
+# 三层配置文件（优先级从高到低）：
+#   1. 本地层：<root>/.koyocode/settings.local.yaml        （永久放行写入目标，已 gitignore）
+#   2. 项目层：<root>/.koyocode/settings.yaml              （本文件，入库共享）
+#   3. 用户层：~/.koyocode/settings.yaml                   （跨项目个人偏好）
+# 同层 deny 规则优先于 allow；越靠近会话（local > project > user）越优先。
+#
+# 规则用友好名：Bash / Read / Write / Edit / Glob / Grep。
+#   - 括号内为 glob 模式，缺省括号匹配该工具全部调用。
+#   - 命令类 Bash：* 匹配任意字符（含空格），** 等价 *。
+#   - 文件路径类：* 段内匹配、** 跨段匹配（如 src/** 匹配 src 任意层级子文件）。
+#
+# 只读类（read_file/glob/grep）默认即 Allow，allow 规则主要用于提前放行 Bash/Write；
+# deny 规则可对只读做围栏（如 Read(.env)）。内置危险命令黑名单与路径沙箱始终生效，
+# 任何配置/模式（含 bypass）都无法放开。
+
+default_mode: default  # default | acceptEdits | plan | bypassPermissions
+
+permissions:
+  allow:
+    - "Bash(git *)"        # 放行 git 系列
+    - "Bash(pytest)"        # 放行 pytest（精确）
+  deny:
+    - "Bash(rm *)"          # 禁止 rm 任意命令
+    - "Read(.env)"          # 围栏：读取 .env
+    - "Write(.env)"         # 围栏：写 .env
