@@ -3,12 +3,10 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from koyocode.llm import ToolCall
 from koyocode.permission import Decision, Mode
 from koyocode.permission.engine import new_engine
-from koyocode.permission.persist import escape_glob, rule_for
+from koyocode.permission.persist import rule_for
 
 
 def _bash(cmd: str) -> ToolCall:

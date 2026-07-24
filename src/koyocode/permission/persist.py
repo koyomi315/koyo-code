@@ -9,19 +9,18 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import yaml
 
 from koyocode.llm import ToolCall
+from koyocode.permission.rule import Rule
 from koyocode.permission.settings import (
     SettingsError,
     extract_target,
     friendly_name,
     load_settings,
 )
-from koyocode.permission.rule import Rule
 
 __all__ = ["persist_local_allow", "rule_for"]
 
@@ -85,7 +84,7 @@ def persist_local_allow(engine: object, call: ToolCall) -> None:
     try:
         settings = load_settings(path)
     except SettingsError:
-        from koyocode.permission.settings import Settings, PermissionsBlock
+        from koyocode.permission.settings import PermissionsBlock, Settings
 
         settings = Settings(permissions=PermissionsBlock())
 

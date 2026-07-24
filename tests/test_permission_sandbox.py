@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from koyocode.permission.sandbox import (
-    eval_symlinks_or_ancestor,
     resolve_root,
     sandbox_ok,
 )

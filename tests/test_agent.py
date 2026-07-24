@@ -535,7 +535,9 @@ async def test_stable_prompt_same_across_modes_ac5() -> None:
 
     conv2 = Conversation()
     conv2.add_user("norm")
-    await _collect(Agent(norm_provider, reg, "test", _engine()), conv2, Mode.BYPASS, asyncio.Event())
+    await _collect(
+        Agent(norm_provider, reg, "test", _engine()), conv2, Mode.BYPASS, asyncio.Event()
+    )
 
     stable_plan = plan_provider.received_reqs[0].system.stable
     stable_norm = norm_provider.received_reqs[0].system.stable
@@ -603,9 +605,7 @@ async def test_cache_usage_passthrough_ac6() -> None:
 
 
 def _write_call(path: str, cid: str = "w") -> ToolCall:
-    return ToolCall(
-        id=cid, name="write_file", input=json.dumps({"path": path, "content": "x"})
-    )
+    return ToolCall(id=cid, name="write_file", input=json.dumps({"path": path, "content": "x"}))
 
 
 def _read_call_at(path: str, cid: str = "r") -> ToolCall:
@@ -644,9 +644,7 @@ async def test_ordered_reflow_with_deny(tmp_path: Path) -> None:
     provider = FakeProvider(
         scripts=[
             [
-                StreamEvent(
-                    tool_calls=[_read_call_at(outside, "c1"), _read_call_at(inner, "c2")]
-                ),
+                StreamEvent(tool_calls=[_read_call_at(outside, "c1"), _read_call_at(inner, "c2")]),
                 StreamEvent(done=True),
             ],
             [StreamEvent(text="ok"), StreamEvent(done=True)],
@@ -745,9 +743,7 @@ async def test_read_only_batch_no_approval(tmp_path: Path) -> None:
     provider = FakeProvider(
         scripts=[
             [
-                StreamEvent(
-                    tool_calls=[_read_call_at(outside, "c1"), _read_call_at(inner, "c2")]
-                ),
+                StreamEvent(tool_calls=[_read_call_at(outside, "c1"), _read_call_at(inner, "c2")]),
                 StreamEvent(done=True),
             ],
             [StreamEvent(text="ok"), StreamEvent(done=True)],

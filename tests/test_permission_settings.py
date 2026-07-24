@@ -45,7 +45,7 @@ def test_load_settings_valid(tmp_path) -> None:
 
 
 def test_to_rule_set_skips_invalid() -> None:
-    from koyocode.permission.settings import Settings, PermissionsBlock
+    from koyocode.permission.settings import PermissionsBlock, Settings
 
     s = Settings(permissions=PermissionsBlock(allow=["Bash(git *)", "(", "Read"], deny=[]))
     rs = to_rule_set(s)
@@ -112,12 +112,10 @@ def test_extract_target_unknown() -> None:
 
 
 def test_to_rule_set_builds_allow_deny() -> None:
-    from koyocode.permission.settings import Settings, PermissionsBlock
+    from koyocode.permission.settings import PermissionsBlock, Settings
 
     s = Settings(
-        permissions=PermissionsBlock(
-            allow=["Bash(git *)"], deny=["Bash(rm *)", "Read(.env)"]
-        )
+        permissions=PermissionsBlock(allow=["Bash(git *)"], deny=["Bash(rm *)", "Read(.env)"])
     )
     rs = to_rule_set(s)
     assert isinstance(rs, RuleSet)

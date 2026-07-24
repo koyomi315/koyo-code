@@ -18,6 +18,8 @@ Allow 执行、Deny 直接产被拒 ``ToolResult``、Ask 发 ``ApprovalRequest``
 不暴露循环内部细节。
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
@@ -316,9 +318,7 @@ async def _execute_batched(
             for k in range(i, j):
                 decision, reason = agent.engine.check(mode, calls[k], True)
                 if decision == Decision.DENY:
-                    results[k] = ToolResult(
-                        tool_call_id=calls[k].id, content=reason, is_error=True
-                    )
+                    results[k] = ToolResult(tool_call_id=calls[k].id, content=reason, is_error=True)
                     deny_set.add(k)
                 elif decision == Decision.ASK:
                     # 只读永不 Ask；兜底安全拒绝
@@ -361,9 +361,7 @@ async def _execute_batched(
                     outcome.completed = False
                     return
             elif decision == Decision.DENY:
-                results[k] = ToolResult(
-                    tool_call_id=calls[k].id, content=reason, is_error=True
-                )
+                results[k] = ToolResult(tool_call_id=calls[k].id, content=reason, is_error=True)
             else:  # ASK：人在回路
                 # 借助 _execute_batched 自身的 async generator：yield 出审批事件，
                 # 供顶层消费者 set_result 后，批循环在此 await 恢复（见 run 透传）。
@@ -440,9 +438,7 @@ class Agent:
     def engine(self) -> Engine:
         return self._engine
 
-    def run(
-        self, conv: Conversation, mode: Mode, cancel: asyncio.Event
-    ) -> AsyncIterator[Event]:
+    def run(self, conv: Conversation, mode: Mode, cancel: asyncio.Event) -> AsyncIterator[Event]:
         """执行 Agent Loop，async generator 吐出事件流。"""
         return self._run_impl(conv, mode, cancel)
 
@@ -527,9 +523,7 @@ class Agent:
         yield Event(done=True)
 
 
-def new_agent(
-    provider: Provider, registry: Registry, version: str, engine: Engine
-) -> Agent:
+def new_agent(provider: Provider, registry: Registry, version: str, engine: Engine) -> Agent:
     """构造 ``Agent``（T8：增 ``engine`` 形参）。"""
     return Agent(provider, registry, version, engine)
 

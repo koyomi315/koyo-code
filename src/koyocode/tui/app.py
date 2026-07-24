@@ -33,7 +33,7 @@ from textual.widgets import Markdown, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from koyocode import __version__
-from koyocode.agent import Agent, Phase
+from koyocode.agent import Agent, ApprovalRequest, Phase
 from koyocode.config import ProviderConfig
 from koyocode.conversation import Conversation
 from koyocode.llm import Provider, new_provider
@@ -173,7 +173,7 @@ class KoyoCodeApp(App):
         # 权限：mode 由 engine 决定启动模式；无 engine 退化为 DEFAULT。
         self.engine = engine
         self.mode: Mode = engine.start_mode() if engine is not None else Mode.DEFAULT
-        self.pending = None  # ApprovalRequest | None
+        self.pending: ApprovalRequest | None = None
         self.approve_cursor: int = 0
         self.iter = 0
         self.usage_in = 0
@@ -575,9 +575,7 @@ class KoyoCodeApp(App):
         if key == "shift+tab" and self.state == SessionState.IDLE:
             event.stop()
             self.mode = next_mode(self.mode)
-            self._append_history_text(
-                f"● 已切换到 {_mode_label(self.mode)} 模式", "notice-message"
-            )
+            self._append_history_text(f"● 已切换到 {_mode_label(self.mode)} 模式", "notice-message")
             self._update_statusbar()
             return
         # APPROVING 态分派待批准按键
@@ -601,8 +599,10 @@ class KoyoCodeApp(App):
     async def action_quit(self) -> None:
         if self._copy_selected_text():
             return
-        if self.state in (SessionState.STREAMING, SessionState.APPROVING) and \
-                self.turn_cancel is not None:
+        if (
+            self.state in (SessionState.STREAMING, SessionState.APPROVING)
+            and self.turn_cancel is not None
+        ):
             # 流式/审批态 Ctrl+C：取消本轮，不退出程序（F7）。
             if self.state == SessionState.APPROVING and self.pending is not None:
                 # 兜底解开 agent 等待再取消
@@ -614,8 +614,10 @@ class KoyoCodeApp(App):
 
     def action_cancel_turn(self) -> None:
         """Esc：流式/审批态取消本轮，不退出程序（F7）；其余状态忽略。"""
-        if self.state in (SessionState.STREAMING, SessionState.APPROVING) and \
-                self.turn_cancel is not None:
+        if (
+            self.state in (SessionState.STREAMING, SessionState.APPROVING)
+            and self.turn_cancel is not None
+        ):
             if self.state == SessionState.APPROVING and self.pending is not None:
                 self.pending.respond.set_result(Outcome.DENY_ONCE)
                 self.pending = None

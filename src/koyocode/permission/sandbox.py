@@ -13,8 +13,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 __all__ = ["eval_symlinks_or_ancestor", "resolve_root", "sandbox_ok"]
 
@@ -57,14 +57,14 @@ def _is_within(root: str, resolved: str) -> bool:
     return resolved == root or resolved.startswith(root + os.sep)
 
 
-@dataclass
-class _EngineLike:
-    """沙箱判定所需的最小依赖：仅需要 ``root`` 字段（真实 ``Engine`` 是其超集）。"""
+@runtime_checkable
+class _HasRoot(Protocol):
+    """沙箱判定所需的最小依赖：仅需要 ``root`` 字段（真实 ``Engine`` 满足）。"""
 
     root: str
 
 
-def sandbox_ok(engine: _EngineLike, path: str) -> bool:
+def sandbox_ok(engine: _HasRoot, path: str) -> bool:
     """``path`` 是否在 ``engine.root`` 子树内（N2）。
 
     - 空 ``path`` 视为 ``engine.root``（通过）。

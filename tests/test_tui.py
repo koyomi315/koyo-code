@@ -15,8 +15,7 @@ from textual.widgets import Markdown, Static
 import koyocode.tui.app as appmod
 from koyocode.config import ProviderConfig
 from koyocode.llm import StreamEvent, ToolCall
-from koyocode.permission import Mode, Outcome
-from koyocode.permission import new_engine
+from koyocode.permission import Mode, Outcome, new_engine
 from koyocode.tui import KoyoCodeApp, SessionState
 
 
@@ -712,7 +711,11 @@ def test_approval_request_flows_to_approving(monkeypatch, tmp_path):
                 self._first = False
                 yield StreamEvent(
                     tool_calls=[
-                        ToolCall(id="a1", name="write_file", input=json.dumps({"path": target, "content": "x"}))
+                        ToolCall(
+                            id="a1",
+                            name="write_file",
+                            input=json.dumps({"path": target, "content": "x"}),
+                        )
                     ]
                 )
                 yield StreamEvent(done=True)
@@ -750,7 +753,6 @@ def test_approval_down_enter_returns_allow_forever(monkeypatch, tmp_path):
     """APPROVING: 按 down 移到第 2 项、回车 -> respond 收到 ALLOW_FOREVER，回 STREAMING。"""
     target = str(tmp_path / "af.txt")
     engine = new_engine(str(tmp_path))[0]
-    fut_holder: dict = {}
 
     class _ApprovalProvider:
         name = "Fake"
@@ -764,7 +766,11 @@ def test_approval_down_enter_returns_allow_forever(monkeypatch, tmp_path):
             if self._i == 1:
                 yield StreamEvent(
                     tool_calls=[
-                        ToolCall(id="a1", name="write_file", input=json.dumps({"path": target, "content": "x"}))
+                        ToolCall(
+                            id="a1",
+                            name="write_file",
+                            input=json.dumps({"path": target, "content": "x"}),
+                        )
                     ]
                 )
                 yield StreamEvent(done=True)
@@ -824,7 +830,11 @@ def test_approval_number_keys(monkeypatch, tmp_path):
             if self._i == 1:
                 yield StreamEvent(
                     tool_calls=[
-                        ToolCall(id="a1", name="write_file", input=json.dumps({"path": str(tmp_path / "n1.txt"), "content": "x"}))
+                        ToolCall(
+                            id="a1",
+                            name="write_file",
+                            input=json.dumps({"path": str(tmp_path / "n1.txt"), "content": "x"}),
+                        )
                     ]
                 )
                 yield StreamEvent(done=True)
@@ -870,7 +880,11 @@ def test_approval_escape_cancels_with_deny_once(monkeypatch, tmp_path):
             if self._i == 1:
                 yield StreamEvent(
                     tool_calls=[
-                        ToolCall(id="a1", name="write_file", input=json.dumps({"path": str(tmp_path / "esc.txt"), "content": "x"}))
+                        ToolCall(
+                            id="a1",
+                            name="write_file",
+                            input=json.dumps({"path": str(tmp_path / "esc.txt"), "content": "x"}),
+                        )
                     ]
                 )
                 yield StreamEvent(done=True)

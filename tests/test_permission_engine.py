@@ -1,7 +1,6 @@
 """引擎与前四层流水线单测：逐层短路、跳层、模式矩阵、三级优先级、降级。"""
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -24,9 +23,7 @@ def _read(path: str, call_id: str = "1") -> ToolCall:
 
 
 def _write(path: str, call_id: str = "1") -> ToolCall:
-    return ToolCall(
-        id=call_id, name="write_file", input=json.dumps({"path": path, "content": "x"})
-    )
+    return ToolCall(id=call_id, name="write_file", input=json.dumps({"path": path, "content": "x"}))
 
 
 def _bash(cmd: str, call_id: str = "1") -> ToolCall:

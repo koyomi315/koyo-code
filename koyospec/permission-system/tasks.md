@@ -175,7 +175,7 @@
 
 **验证：** `python -m koyocode --version` 不抛；`python -m smoke` 在含 write_file 的脚本下**不阻塞、跑完**（确认 `Mode.BYPASS` 跳过 Ask）；`python -m koyocode` 能正常启动进对话。
 
-## T13: 全量编译测试与规范**文件：** —
+## T13: 全量编译测试与规范 [x]**文件：** —
 **依赖：** T1–T12
 **步骤：**
 1. `ruff format --check .`（通过；本地 `ruff format .` 已统一）。
