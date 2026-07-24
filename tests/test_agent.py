@@ -31,10 +31,18 @@ from koyocode.agent import (
 from koyocode.conversation import Conversation
 from koyocode.llm import StreamEvent, ToolCall
 from koyocode.llm import Usage as LLMUsage
+from koyocode.permission import Outcome, new_engine
 from koyocode.tool import Registry, Result, new_default_registry
 
 _READ_TARGET = Path(__file__).resolve().parent.parent / "pyproject.toml"
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 _FULL_TOOLS = {"read_file", "write_file", "edit_file", "bash", "glob", "grep"}
+
+
+def _engine(root: str = _REPO_ROOT):
+    """构造根于仓库根的权限引擎（read_file 目标在子树内、避开沙箱）。"""
+    engine, _ = new_engine(root)
+    return engine
 
 
 class FakeProvider:
@@ -81,6 +89,26 @@ async def _collect(
     return events
 
 
+async def _collect_with_approval(
+    agent: Agent,
+    conv: Conversation,
+    mode: Mode,
+    outcomes: list,
+    cancel: asyncio.Event | None = None,
+) -> list[Event]:
+    """``_collect`` 变体：遇 ``Event.approval`` 即按顺序回填 ``outcomes`` 中的决策。"""
+    events: list[Event] = []
+    cancel = cancel or asyncio.Event()
+    idx = 0
+    async for ev in agent.run(conv, mode, cancel):
+        events.append(ev)
+        if ev.approval is not None:
+            outcome = outcomes[idx] if idx < len(outcomes) else outcomes[-1]
+            idx += 1
+            ev.approval.respond.set_result(outcome)
+    return events
+
+
 # ───────── 场景 A：多轮自动连环（AC1）─────────
 
 
@@ -102,12 +130,12 @@ async def test_multi_turn_chain_ac1() -> None:
         ]
     )
     reg = new_default_registry()
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("读 pyproject.toml 并总结")
 
-    events = await _collect(agent, conv, Mode.NORMAL, asyncio.Event())
+    events = await _collect(agent, conv, Mode.BYPASS, asyncio.Event())
 
     assert [e.iter for e in events if e.iter] == [1, 2]
 
@@ -141,12 +169,12 @@ async def test_no_tool_calls_direct_done() -> None:
         scripts=[[StreamEvent(text="你好"), StreamEvent(text="，世界"), StreamEvent(done=True)]]
     )
     reg = new_default_registry()
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("打招呼")
 
-    events = await _collect(agent, conv, Mode.NORMAL, asyncio.Event())
+    events = await _collect(agent, conv, Mode.BYPASS, asyncio.Event())
 
     assert [e.text for e in events if e.text] == ["你好", "，世界"]
     assert events[-1].done is True
@@ -184,12 +212,12 @@ async def test_iteration_cap_stops_at_max_ac3() -> None:
     provider = FakeProvider(scripts=[[StreamEvent(tool_calls=[call]), StreamEvent(done=True)]])
     reg = Registry()
     reg.register(EchoTool())
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("keep going")
 
-    events = await _collect(agent, conv, Mode.NORMAL, asyncio.Event())
+    events = await _collect(agent, conv, Mode.BYPASS, asyncio.Event())
 
     assert provider.calls == MAX_ITERATIONS
     assert any(e.notice == NOTICE_MAX_ITER for e in events)
@@ -205,12 +233,12 @@ async def test_consecutive_unknown_tools_stops_ac4() -> None:
     call = ToolCall(id="c", name="ghost", input="{}")
     provider = FakeProvider(scripts=[[StreamEvent(tool_calls=[call]), StreamEvent(done=True)]])
     reg = Registry()  # 空注册中心：ghost 永远未知
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("go")
 
-    events = await _collect(agent, conv, Mode.NORMAL, asyncio.Event())
+    events = await _collect(agent, conv, Mode.BYPASS, asyncio.Event())
 
     assert provider.calls == MAX_UNKNOWN_RUN
     assert any(e.notice == NOTICE_UNKNOWN_TOOLS for e in events)
@@ -237,12 +265,12 @@ async def test_unknown_run_resets_when_known_tool_appears() -> None:
     provider = FakeProvider(scripts=scripts)
     reg = Registry()
     reg.register(EchoTool())
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("go")
 
-    events = await _collect(agent, conv, Mode.NORMAL, asyncio.Event())
+    events = await _collect(agent, conv, Mode.BYPASS, asyncio.Event())
 
     assert provider.calls == 6
     assert not any(e.notice == NOTICE_UNKNOWN_TOOLS for e in events)
@@ -335,12 +363,12 @@ async def test_ordered_batched_concurrency_ac8() -> None:
             [StreamEvent(text="完成"), StreamEvent(done=True)],
         ]
     )
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("go")
 
-    events = await _collect(agent, conv, Mode.NORMAL, asyncio.Event())
+    events = await _collect(agent, conv, Mode.BYPASS, asyncio.Event())
 
     # 两只读并发峰值 >= 2
     assert tracker.peak >= 2
@@ -387,7 +415,7 @@ async def test_cancellation_keeps_history_consistent_ac9() -> None:
     reg.register(_SleepyTool(delay=0.2))
     call = ToolCall(id="c1", name="sleepy", input="{}")
     provider = FakeProvider(scripts=[[StreamEvent(tool_calls=[call]), StreamEvent(done=True)]])
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("go slow")
@@ -398,7 +426,7 @@ async def test_cancellation_keeps_history_consistent_ac9() -> None:
         cancel.set()
 
     cancel_task = asyncio.create_task(_cancel_soon())
-    await _collect(agent, conv, Mode.NORMAL, cancel)
+    await _collect(agent, conv, Mode.BYPASS, cancel)
     await cancel_task
 
     msgs = conv.messages()
@@ -409,9 +437,9 @@ async def test_cancellation_keeps_history_consistent_ac9() -> None:
 
     # 取消后历史未坏，可继续对话
     provider2 = FakeProvider(scripts=[[StreamEvent(text="继续没问题"), StreamEvent(done=True)]])
-    agent2 = Agent(provider2, reg, "test")
+    agent2 = Agent(provider2, reg, "test", _engine())
     conv.add_user("继续")
-    events2 = await _collect(agent2, conv, Mode.NORMAL, asyncio.Event())
+    events2 = await _collect(agent2, conv, Mode.BYPASS, asyncio.Event())
 
     assert events2[-1].done is True
     assert conv.messages()[-1].content == "继续没问题"
@@ -424,7 +452,7 @@ async def test_cancellation_keeps_history_consistent_ac9() -> None:
 async def test_plan_mode_uses_read_only_tools_and_reminder_ac13() -> None:
     provider = FakeProvider(scripts=[[StreamEvent(text="这是计划"), StreamEvent(done=True)]])
     reg = new_default_registry()
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("给登录功能加单测的方案")
@@ -457,7 +485,7 @@ async def test_plan_reminder_interval_full_then_concise_ac9() -> None:
     scripts.append([StreamEvent(text="done"), StreamEvent(done=True)])
     provider = FakeProvider(scripts=scripts)
     reg = new_default_registry()
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("调研并出计划")
@@ -482,12 +510,12 @@ async def test_normal_mode_no_reminder_and_full_tools() -> None:
     """普通模式无 reminder、tools 为全量（F7/AC9）。"""
     provider = FakeProvider(scripts=[[StreamEvent(text="ok"), StreamEvent(done=True)]])
     reg = new_default_registry()
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("hi")
 
-    await _collect(agent, conv, Mode.NORMAL, asyncio.Event())
+    await _collect(agent, conv, Mode.BYPASS, asyncio.Event())
 
     req = provider.received_reqs[0]
     assert req.reminder == ""
@@ -503,11 +531,13 @@ async def test_stable_prompt_same_across_modes_ac5() -> None:
 
     conv1 = Conversation()
     conv1.add_user("plan")
-    await _collect(Agent(plan_provider, reg, "test"), conv1, Mode.PLAN, asyncio.Event())
+    await _collect(Agent(plan_provider, reg, "test", _engine()), conv1, Mode.PLAN, asyncio.Event())
 
     conv2 = Conversation()
     conv2.add_user("norm")
-    await _collect(Agent(norm_provider, reg, "test"), conv2, Mode.NORMAL, asyncio.Event())
+    await _collect(
+        Agent(norm_provider, reg, "test", _engine()), conv2, Mode.BYPASS, asyncio.Event()
+    )
 
     stable_plan = plan_provider.received_reqs[0].system.stable
     stable_norm = norm_provider.received_reqs[0].system.stable
@@ -529,7 +559,7 @@ async def test_reminder_not_persisted_in_history_ac8() -> None:
         ]
     )
     reg = new_default_registry()
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("plan it")
@@ -556,12 +586,12 @@ async def test_cache_usage_passthrough_ac6() -> None:
         ]
     )
     reg = new_default_registry()
-    agent = Agent(provider, reg, "test")
+    agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
     conv.add_user("hi")
 
-    events = await _collect(agent, conv, Mode.NORMAL, asyncio.Event())
+    events = await _collect(agent, conv, Mode.BYPASS, asyncio.Event())
 
     usages = [e.usage for e in events if e.usage is not None]
     assert usages
@@ -569,3 +599,209 @@ async def test_cache_usage_passthrough_ac6() -> None:
     assert usages[0].cache_read == 0
     assert usages[0].input == 100
     assert usages[0].output == 20
+
+
+# ───────── 场景 G：权限系统集成（Deny/Ask/保序/并发/永久/取消，T9）─────────
+
+
+def _write_call(path: str, cid: str = "w") -> ToolCall:
+    return ToolCall(id=cid, name="write_file", input=json.dumps({"path": path, "content": "x"}))
+
+
+def _read_call_at(path: str, cid: str = "r") -> ToolCall:
+    return ToolCall(id=cid, name="read_file", input=json.dumps({"path": path}))
+
+
+@pytest.mark.asyncio
+async def test_deny_does_not_break_loop(tmp_path: Path) -> None:
+    """Deny 回灌不中断：沙箱外路径被拒，Loop 继续到次轮给出文本。"""
+    outside = str(tmp_path.parent / "koyo_outside_target.py")
+    provider = FakeProvider(
+        scripts=[
+            [StreamEvent(tool_calls=[_read_call_at(outside, "c1")]), StreamEvent(done=True)],
+            [StreamEvent(text="完成"), StreamEvent(done=True)],
+        ]
+    )
+    reg = new_default_registry()
+    engine, _ = new_engine(str(tmp_path))
+    agent = Agent(provider, reg, "test", engine)
+    conv = Conversation()
+    conv.add_user("读外部文件")
+    events = await _collect(agent, conv, Mode.DEFAULT, asyncio.Event())
+
+    tool_end = [e for e in events if e.tool and e.tool.phase == Phase.END]
+    assert tool_end and tool_end[0].tool.is_error is True  # 沙箱拒绝
+    assert conv.last_role() == "assistant"
+    assert events[-1].done is True
+
+
+@pytest.mark.asyncio
+async def test_ordered_reflow_with_deny(tmp_path: Path) -> None:
+    """保序回灌：单批含被拒 + 放行调用，结果按原下标序、id 配对正确。"""
+    inner = str(tmp_path / "ok.txt")
+    (tmp_path / "ok.txt").write_text("ok")
+    outside = str(tmp_path.parent / "koyo_outside2.py")
+    provider = FakeProvider(
+        scripts=[
+            [
+                StreamEvent(tool_calls=[_read_call_at(outside, "c1"), _read_call_at(inner, "c2")]),
+                StreamEvent(done=True),
+            ],
+            [StreamEvent(text="ok"), StreamEvent(done=True)],
+        ]
+    )
+    reg = new_default_registry()
+    engine, _ = new_engine(str(tmp_path))
+    agent = Agent(provider, reg, "test", engine)
+    conv = Conversation()
+    conv.add_user("go")
+    await _collect(agent, conv, Mode.DEFAULT, asyncio.Event())
+
+    tool_msg = next(m for m in conv.messages() if m.role == "tool")
+    assert [r.tool_call_id for r in tool_msg.tool_results] == ["c1", "c2"]  # 保序
+    assert [r.is_error for r in tool_msg.tool_results] == [True, False]  # 越界拒、内侧放行
+
+
+@pytest.mark.asyncio
+async def test_ask_approval_allow_once(tmp_path: Path) -> None:
+    """Ask 人在回路：default 下 write_file 收 ApprovalRequest，回 ALLOW_ONCE 后执行生效。"""
+    target = str(tmp_path / "out.txt")
+    provider = FakeProvider(
+        scripts=[
+            [StreamEvent(tool_calls=[_write_call(target, "c1")]), StreamEvent(done=True)],
+            [StreamEvent(text="写好了"), StreamEvent(done=True)],
+        ]
+    )
+    reg = new_default_registry()
+    engine, _ = new_engine(str(tmp_path))
+    agent = Agent(provider, reg, "test", engine)
+    conv = Conversation()
+    conv.add_user("写文件")
+    events = await _collect_with_approval(agent, conv, Mode.DEFAULT, [Outcome.ALLOW_ONCE])
+
+    approvals = [e for e in events if e.approval is not None]
+    assert approvals and approvals[0].approval.name == "write_file"
+    assert Path(target).exists()
+    tool_end = [e for e in events if e.tool and e.tool.phase == Phase.END]
+    assert tool_end[0].tool.is_error is False
+    assert events[-1].done is True
+
+
+@pytest.mark.asyncio
+async def test_ask_approval_deny_once(tmp_path: Path) -> None:
+    """DENY_ONCE：拒绝后回灌被拒结果、不写文件、Loop 继续。"""
+    target = str(tmp_path / "out2.txt")
+    provider = FakeProvider(
+        scripts=[
+            [StreamEvent(tool_calls=[_write_call(target, "c1")]), StreamEvent(done=True)],
+            [StreamEvent(text="了解，跳过"), StreamEvent(done=True)],
+        ]
+    )
+    reg = new_default_registry()
+    engine, _ = new_engine(str(tmp_path))
+    agent = Agent(provider, reg, "test", engine)
+    conv = Conversation()
+    conv.add_user("写文件")
+    events = await _collect_with_approval(agent, conv, Mode.DEFAULT, [Outcome.DENY_ONCE])
+
+    tool_end = [e for e in events if e.tool and e.tool.phase == Phase.END]
+    assert tool_end[0].tool.is_error is True
+    assert not Path(target).exists()
+    assert events[-1].done is True
+
+
+@pytest.mark.asyncio
+async def test_approval_allow_forever_writes_local(tmp_path: Path) -> None:
+    """ALLOW_FOREVER：永久放行写本地层、当前执行生效。"""
+    target = str(tmp_path / "out3.txt")
+    provider = FakeProvider(
+        scripts=[
+            [StreamEvent(tool_calls=[_write_call(target, "c1")]), StreamEvent(done=True)],
+            [StreamEvent(text="done"), StreamEvent(done=True)],
+        ]
+    )
+    reg = new_default_registry()
+    engine, _ = new_engine(str(tmp_path))
+    agent = Agent(provider, reg, "test", engine)
+    conv = Conversation()
+    conv.add_user("写文件")
+    events = await _collect_with_approval(agent, conv, Mode.DEFAULT, [Outcome.ALLOW_FOREVER])
+
+    assert Path(target).exists()
+    local_file = Path(engine.local_path)
+    assert local_file.exists()
+    assert "Write(" in local_file.read_text()
+    _ = events
+
+
+@pytest.mark.asyncio
+async def test_read_only_batch_no_approval(tmp_path: Path) -> None:
+    """只读批不产生任何 ApprovalRequest（N3 并发不退化）；越界只读得 errResult 其余仍完成。"""
+    inner = str(tmp_path / "inner.txt")
+    (tmp_path / "inner.txt").write_text("x")
+    outside = str(tmp_path.parent / "koyo_outside3.py")
+    provider = FakeProvider(
+        scripts=[
+            [
+                StreamEvent(tool_calls=[_read_call_at(outside, "c1"), _read_call_at(inner, "c2")]),
+                StreamEvent(done=True),
+            ],
+            [StreamEvent(text="ok"), StreamEvent(done=True)],
+        ]
+    )
+    reg = new_default_registry()
+    engine, _ = new_engine(str(tmp_path))
+    agent = Agent(provider, reg, "test", engine)
+    conv = Conversation()
+    conv.add_user("go")
+    events = await _collect(agent, conv, Mode.DEFAULT, asyncio.Event())
+
+    assert not any(e.approval is not None for e in events)  # 只读不触发审批
+    tool_msg = next(m for m in conv.messages() if m.role == "tool")
+    by_id = {r.tool_call_id: r for r in tool_msg.tool_results}
+    assert by_id["c1"].is_error is True and by_id["c2"].is_error is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_approval(tmp_path: Path) -> None:
+    """ApprovalRequest 等待中取消：Loop 干净收尾、无挂起 task（N4）。"""
+    target = str(tmp_path / "cancel.txt")
+    provider = FakeProvider(
+        scripts=[[StreamEvent(tool_calls=[_write_call(target, "c1")]), StreamEvent(done=True)]]
+    )
+    reg = new_default_registry()
+    engine, _ = new_engine(str(tmp_path))
+    agent = Agent(provider, reg, "test", engine)
+    conv = Conversation()
+    conv.add_user("写文件")
+    cancel = asyncio.Event()
+
+    async def _run() -> list[Event]:
+        events: list[Event] = []
+        async for ev in agent.run(conv, Mode.DEFAULT, cancel):
+            events.append(ev)
+            if ev.approval is not None:
+                cancel.set()
+                ev.approval.respond.set_result(Outcome.DENY_ONCE)
+        return events
+
+    await asyncio.wait_for(_run(), timeout=5)
+    assert conv.last_role() == "assistant"
+    assert not Path(target).exists()
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_permission_uses_read_only_tools(tmp_path: Path) -> None:
+    """plan 模式工具集仍只放开只读（沿用 ch05 断言，类型换 permission.Mode）。"""
+    provider = FakeProvider(scripts=[[StreamEvent(text="计划"), StreamEvent(done=True)]])
+    reg = new_default_registry()
+    engine, _ = new_engine(str(tmp_path))
+    agent = Agent(provider, reg, "test", engine)
+    conv = Conversation()
+    conv.add_user("给方案")
+    events = await _collect(agent, conv, Mode.PLAN, asyncio.Event())
+
+    req = provider.received_reqs[0]
+    assert [t.name for t in req.tools] == ["read_file", "glob", "grep"]
+    assert "计划模式" in req.reminder
+    assert events[-1].done is True

@@ -1,6 +1,12 @@
 # 真实配置含 API 密钥，不入库
 .koyocode/config.yaml
 
+# 权限本地层配置（永久放行规则，个人/机器特定，不入库）
+.koyocode/settings.local.yaml
+
+# smoke 临时输出
+smoke_out.txt
+
 # 环境变量 / 密钥（兜底，防止误提交）
 .env
 .env.*

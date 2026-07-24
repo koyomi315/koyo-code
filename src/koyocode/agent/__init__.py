@@ -8,16 +8,24 @@ ch05 扩展：每次 ``run`` 起始采集环境、装配稳定系统提示；每
 计算 reminder（规划模式按轮次详略，F7），组装 ``llm.Request`` 发起请求；缓存用量
 透传到 ``Event.usage``。稳定系统提示普通/规划一致（规划提醒已移出系统通道）。
 
+ch06 扩展（权限系统）：``Mode`` 迁至 ``permission`` 模块（四档）；``Agent`` 持有
+``permission.Engine``；``execute_batched`` 在执行每个工具前调用 ``engine.check``——
+Allow 执行、Deny 直接产被拒 ``ToolResult``、Ask 发 ``ApprovalRequest`` 事件并
+``await`` 用户三选一决策（第五层人在回路，由本模块编排驱动）。
+
 停止条件（各自干净收尾，保持历史合法）：自然完成、迭代上限、用户取消、
 连续多轮只请求未知工具、流出错。对外只吐 ``Event`` 异步流，供 TUI 渲染，
 不暴露循环内部细节。
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from enum import Enum, IntEnum
+from enum import Enum
 
 from koyocode import prompt
 from koyocode.conversation import Conversation
@@ -31,7 +39,10 @@ from koyocode.llm import (
     ToolResult,
 )
 from koyocode.llm import Usage as LLMUsage
+from koyocode.permission import Decision, Engine, Mode, Outcome
 from koyocode.tool import DEFAULT_TIMEOUT, Registry
+
+log = logging.getLogger(__name__)
 
 _ARGS_PREVIEW_LEN = 80
 _EMPTY_FINAL_TEXT = "（无更多说明）"
@@ -56,13 +67,6 @@ class Phase(Enum):
     END = "end"
 
 
-class Mode(IntEnum):
-    """Agent Loop 的两种工具集模式（规划模式仅放开只读工具，F7）。"""
-
-    NORMAL = 0
-    PLAN = 1
-
-
 @dataclass
 class ToolEvent:
     """一次工具调用的开始/结束（供 TUI 渲染工具行与结果摘要）。"""
@@ -85,6 +89,21 @@ class Usage:
 
 
 @dataclass
+class ApprovalRequest:
+    """人在回路请求（第五层）：agent emit 后 ``await respond`` 等用户三选一。
+
+    ``respond`` 为单次 ``asyncio.Future[Outcome]``；TUI 调 ``set_result(Outcome)`` 后
+    agent 从 ``await`` 恢复。取消时上层兜底 ``set_result(Outcome.DENY_ONCE)``，
+    本协程经 ``asyncio.CancelledError`` 退出。
+    """
+
+    name: str
+    args: str
+    reason: str
+    respond: asyncio.Future[Outcome]
+
+
+@dataclass
 class Event:
     """Agent Loop 对外事件流元素，TUI 据非默认字段分派渲染。"""
 
@@ -95,6 +114,7 @@ class Event:
     notice: str = ""
     done: bool = False
     err: Exception | None = None
+    approval: ApprovalRequest | None = None
 
 
 def _preview_args(input_str: str) -> str:
@@ -141,11 +161,7 @@ async def _stream_once(
     cancel: asyncio.Event,
     outcome: _StreamOutcome,
 ) -> AsyncIterator[Event]:
-    """单次流式请求；把结果写入 ``outcome``，转发途中产生的文本增量 / 错误事件。
-
-    组装 ``llm.Request``（messages=持久历史、tools=本轮工具集、system=稳定+环境、
-    reminder=本轮补充），reminder 不写入持久历史（N3），故不影响后续轮次与可恢复性。
-    """
+    """单次流式请求；把结果写入 ``outcome``，转发途中产生的文本增量 / 错误事件。"""
     try:
         req = Request(
             messages=conv.messages(),
@@ -176,6 +192,30 @@ async def _stream_once(
         return
     if cancel.is_set():
         outcome.ok = False
+
+
+def _end_event(calls: list[ToolCall], results: list[ToolResult | None], k: int) -> Event:
+    """构造第 ``k`` 个调用的 ``Phase.END`` 事件（保序回灌，含被拒/取消项）。"""
+    r = results[k]
+    assert r is not None
+    return Event(
+        tool=ToolEvent(
+            name=calls[k].name,
+            args=_preview_args(calls[k].input),
+            phase=Phase.END,
+            result=r.content,
+            is_error=r.is_error,
+        )
+    )
+
+
+def _finish_segment_cancelled(
+    results: list[ToolResult | None], calls: list[ToolCall], i: int, j: int, n: int
+) -> None:
+    """本批有取消：给 [i,j) 之后到 n 的未执行项填取消结果；[i,j) 内由调用方先填好。"""
+    _fill_cancelled(results, calls, j, n)
+    # 兜底 [i,j) 中仍为 None 的（理论上不应有）
+    _fill_cancelled(results, calls, i, j)
 
 
 async def _watched_execute(
@@ -230,15 +270,23 @@ class _BatchOutcome:
 
 
 async def _execute_batched(
+    agent: Agent,
     registry: Registry,
     calls: list[ToolCall],
+    mode: Mode,
     cancel: asyncio.Event,
     outcome: _BatchOutcome,
 ) -> AsyncIterator[Event]:
     """保序分批执行：连续只读并发、其余串行，保持模型给出的相对顺序（F5）。
 
-    开始事件按调用序发出、结束事件按调用序发出；并发只发生在执行环节，
-    scrollback 顺序不受影响（N3）。每个并发 task 只写自己下标，无数据竞争（N6）。
+    每个工具执行前调用 ``agent.engine.check(mode, call, read_only)``：
+
+    - **只读批**：逐个 check；Deny 预置被拒 ``ToolResult`` 不入并发；Allow 照旧并发
+      （只读永不 Ask，N3 并发不退化；若意外 Ask 按 Deny 兜底安全）。
+    - **有副作用串行**：Allow→执行；Deny→被拒结果；Ask→``request_approval`` 等用户三选一。
+
+    开始/结束事件按调用序发出（Deny 项也发 ``PhaseEnd``、``is_error=True``，与有副作用
+    Deny 一致）。每个并发 task 只写自己下标，无数据竞争（N6）。
     """
     n = len(calls)
     results: list[ToolResult | None] = [None] * n
@@ -250,10 +298,12 @@ async def _execute_batched(
             outcome.completed = False
             return
 
+        # 切片：连续只读成一批，其余单个成批
         j = i + 1
         if registry.is_read_only(calls[i].name):
             while j < n and registry.is_read_only(calls[j].name):
                 j += 1
+        read_only_batch = j - i > 1 or registry.is_read_only(calls[i].name)
 
         for k in range(i, j):
             yield Event(
@@ -262,33 +312,111 @@ async def _execute_batched(
                 )
             )
 
-        outs = await asyncio.gather(
-            *(_watched_execute(registry, calls[k], cancel) for k in range(i, j))
-        )
-        segment_cancelled = False
-        for offset, (result, completed) in enumerate(outs):
-            results[i + offset] = result
-            if not completed:
-                segment_cancelled = True
+        if read_only_batch:
+            # 只读批：逐个 check；Deny 预置被拒结果不入并发
+            deny_set: set[int] = set()
+            for k in range(i, j):
+                decision, reason = agent.engine.check(mode, calls[k], True)
+                if decision == Decision.DENY:
+                    results[k] = ToolResult(tool_call_id=calls[k].id, content=reason, is_error=True)
+                    deny_set.add(k)
+                elif decision == Decision.ASK:
+                    # 只读永不 Ask；兜底安全拒绝
+                    results[k] = ToolResult(
+                        tool_call_id=calls[k].id,
+                        content="只读工具被要求确认，安全拒绝",
+                        is_error=True,
+                    )
+                    deny_set.add(k)
+            runnable = [k for k in range(i, j) if k not in deny_set]
+            if runnable:
+                outs = await asyncio.gather(
+                    *(_watched_execute(registry, calls[k], cancel) for k in runnable)
+                )
+                segment_cancelled = False
+                for offset, k in enumerate(runnable):
+                    result, completed = outs[offset]
+                    results[k] = result
+                    if not completed:
+                        segment_cancelled = True
+                if segment_cancelled:
+                    _finish_segment_cancelled(results, calls, i, j, n)
+                    for k in range(i, j):
+                        yield _end_event(calls, results, k)
+                    outcome.results = [r for r in results if r is not None]
+                    outcome.completed = False
+                    return
+        else:
+            # 有副作用串行：单个调用
+            k = i
+            decision, reason = agent.engine.check(mode, calls[k], False)
+            if decision == Decision.ALLOW:
+                result, completed = await _watched_execute(registry, calls[k], cancel)
+                results[k] = result
+                if not completed:
+                    _finish_segment_cancelled(results, calls, i, j, n)
+                    for kk in range(i, j):
+                        yield _end_event(calls, results, kk)
+                    outcome.results = [r for r in results if r is not None]
+                    outcome.completed = False
+                    return
+            elif decision == Decision.DENY:
+                results[k] = ToolResult(tool_call_id=calls[k].id, content=reason, is_error=True)
+            else:  # ASK：人在回路
+                # 借助 _execute_batched 自身的 async generator：yield 出审批事件，
+                # 供顶层消费者 set_result 后，批循环在此 await 恢复（见 run 透传）。
+                respond: asyncio.Future[Outcome] = asyncio.get_running_loop().create_future()
+                approval_ev = Event(
+                    approval=ApprovalRequest(
+                        name=calls[k].name,
+                        args=_preview_args(calls[k].input),
+                        reason=reason,
+                        respond=respond,
+                    )
+                )
+                try:
+                    yield approval_ev
+                    outcome_req = await respond
+                except asyncio.CancelledError:
+                    if not respond.done():
+                        respond.set_result(Outcome.DENY_ONCE)
+                    raise
+                if outcome_req == Outcome.ALLOW_ONCE:
+                    result, completed = await _watched_execute(registry, calls[k], cancel)
+                    results[k] = result
+                    if not completed:
+                        _finish_segment_cancelled(results, calls, i, j, n)
+                        for kk in range(i, j):
+                            yield _end_event(calls, results, kk)
+                        outcome.results = [r for r in results if r is not None]
+                        outcome.completed = False
+                        return
+                elif outcome_req == Outcome.ALLOW_FOREVER:
+                    try:
+                        agent.engine.persist_local_allow(calls[k])
+                    except Exception as e:  # noqa: BLE001 - 永久写入失败仅记日志不阻断
+                        log.warning("永久放行写入失败: %s", e)
+                    result, completed = await _watched_execute(registry, calls[k], cancel)
+                    results[k] = result
+                    if not completed:
+                        _finish_segment_cancelled(results, calls, i, j, n)
+                        for kk in range(i, j):
+                            yield _end_event(calls, results, kk)
+                        outcome.results = [r for r in results if r is not None]
+                        outcome.completed = False
+                        return
+                else:  # DENY_ONCE
+                    results[k] = ToolResult(
+                        tool_call_id=calls[k].id,
+                        content=reason or "用户拒绝执行该操作",
+                        is_error=True,
+                    )
 
         for k in range(i, j):
             r = results[k]
             assert r is not None
-            yield Event(
-                tool=ToolEvent(
-                    name=calls[k].name,
-                    args=_preview_args(calls[k].input),
-                    phase=Phase.END,
-                    result=r.content,
-                    is_error=r.is_error,
-                )
-            )
+            yield _end_event(calls, results, k)
 
-        if segment_cancelled:
-            _fill_cancelled(results, calls, j, n)
-            outcome.results = [r for r in results if r is not None]
-            outcome.completed = False
-            return
         i = j
 
     outcome.results = [r for r in results if r is not None]
@@ -296,23 +424,27 @@ async def _execute_batched(
 
 
 class Agent:
-    """持有 provider 与注册中心，执行 ReAct 循环。"""
+    """持有 provider 与注册中心与权限引擎，执行 ReAct 循环。"""
 
-    def __init__(self, provider: Provider, registry: Registry, version: str) -> None:
+    def __init__(
+        self, provider: Provider, registry: Registry, version: str, engine: Engine
+    ) -> None:
         self._provider = provider
         self._registry = registry
         self._version = version
+        self._engine = engine
 
-    async def run(
+    @property
+    def engine(self) -> Engine:
+        return self._engine
+
+    def run(self, conv: Conversation, mode: Mode, cancel: asyncio.Event) -> AsyncIterator[Event]:
+        """执行 Agent Loop，async generator 吐出事件流。"""
+        return self._run_impl(conv, mode, cancel)
+
+    async def _run_impl(
         self, conv: Conversation, mode: Mode, cancel: asyncio.Event
     ) -> AsyncIterator[Event]:
-        """执行 Agent Loop，async generator 吐出事件流。
-
-        ``mode`` 决定工具集（规划=只读、普通=全量）；每次 ``run`` 起始采集环境、装配
-        稳定系统提示（普通/规划一致）；每轮按 ``iter`` 计算规划提醒详略（F7）。``cancel``
-        由调用方持有的 ``asyncio.Event``，触发 ``cancel.set()`` 即中断本轮（尽快收尾、
-        保持历史合法，可继续对话）。
-        """
         env = prompt.gather_environment(self._version, self._provider.model)
         sys_text = prompt.build_system_prompt()
         env_text = env.render()
@@ -328,8 +460,6 @@ class Agent:
                 _ensure_assistant_tail(conv, NOTICE_CANCELLED)
                 return
 
-            # 规划模式按轮次注入 reminder：首轮完整、每隔 PLAN_REMINDER_INTERVAL 重复完整、
-            # 其余轮精简（F7/AC9）；reminder 每轮动态构造、不写入持久历史。
             reminder = ""
             if mode == Mode.PLAN:
                 full = it == 1 or (it - 1) % PLAN_REMINDER_INTERVAL == 0
@@ -373,7 +503,7 @@ class Agent:
 
             batch_outcome = _BatchOutcome()
             async for ev in _execute_batched(
-                self._registry, stream_outcome.calls, cancel, batch_outcome
+                self, self._registry, stream_outcome.calls, mode, cancel, batch_outcome
             ):
                 yield ev
             conv.add_tool_results(batch_outcome.results)
@@ -393,6 +523,11 @@ class Agent:
         yield Event(done=True)
 
 
+def new_agent(provider: Provider, registry: Registry, version: str, engine: Engine) -> Agent:
+    """构造 ``Agent``（T8：增 ``engine`` 形参）。"""
+    return Agent(provider, registry, version, engine)
+
+
 __all__ = [
     "MAX_ITERATIONS",
     "MAX_UNKNOWN_RUN",
@@ -402,9 +537,11 @@ __all__ = [
     "NOTICE_UNKNOWN_TOOLS",
     "PLAN_REMINDER_INTERVAL",
     "Agent",
+    "ApprovalRequest",
     "Event",
     "Mode",
     "Phase",
     "ToolEvent",
     "Usage",
+    "new_agent",
 ]
