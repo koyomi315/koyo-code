@@ -27,7 +27,7 @@
 
 ---
 
-## T1: permission 基础类型**文件：** `src/koyocode/permission/__init__.py`
+## T1: permission 基础类型 [x]**文件：** `src/koyocode/permission/__init__.py`
 **依赖：** 无
 **步骤：**
 1. `class Mode(IntEnum)`：`DEFAULT/ACCEPT_EDITS/PLAN/BYPASS`（IntEnum 自动赋值）。
@@ -39,7 +39,7 @@
 
 **验证：** `python -c "from koyocode.permission import Mode, parse_mode; ..."` 跑通；`parse_mode` 对 `"default"/"acceptEdits"/"plan"/"bypassPermissions"`（含大小写变体）均得 `(对应档, True)`，`parse_mode("x")` 得 `(Mode.DEFAULT, False)`。
 
-## T2: 危险命令黑名单**文件：** `src/koyocode/permission/blacklist.py`
+## T2: 危险命令黑名单 [x]**文件：** `src/koyocode/permission/blacklist.py`
 **依赖：** 无
 **步骤：**
 1. 模块级 `_BLACKLIST: list[re.Pattern] = [re.compile(...), ...]`，编译一组高危模式（见 plan：`rm -rf /|~|$HOME|/*`、`dd of=/dev/`、fork bomb、`mkfs.`、`> /dev/sd|nvme|disk`、`chmod -R 777 /` 等）。
