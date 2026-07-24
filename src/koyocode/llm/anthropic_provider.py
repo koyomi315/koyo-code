@@ -1,15 +1,13 @@
 """anthropic 协议适配器：封装 ``AsyncAnthropic``，统一吐出 ``StreamEvent``。
 
-- 注入内置 system prompt；按 ``cfg.thinking`` 开启扩展思考。
-- 工具调用全流程（F3/F4/F6/F7）：
-  - 请求注入 ``tools``（``_to_anthropic_tools``）；
-  - 流式按事件分派，仅取 ``text_delta`` 文本增量（thinking/input_json 增量跳过，
-    input JSON 由 SDK 内部累加）；
-  - 流结束后取 ``get_final_message``，若 ``stop_reason == "tool_use"`` 收集
-    ``ToolUseBlock`` 组装 ``ToolCall`` 一次性上抛；
-  - ``_to_anthropic_messages`` 把 assistant 工具调用回合映射为 ``tool_use`` content
-    块、``ROLE_TOOL`` 结果回合映射为一条 user 消息的 ``tool_result`` content 数组。
+- 系统提示分两块（F3）：``req.system.stable`` 带 ``cache_control: ephemeral`` 断点
+  （可缓存，缓存前缀 = 全部工具 + 稳定块），``req.system.environment`` 不带（不缓存）。
+- reminder 织入消息通道（F6/N3）：非空时并入末条 user 消息的 content 块，避免连续
+  user 触发 400；末条非 user 时新起一条 user。
+- 工具调用全流程：请求注入 ``tools``；流式仅取 ``text_delta``；流结束取
+  ``get_final_message`` 收集 ``tool_use`` 组装 ``ToolCall`` 一次性上抛。
 - 含工具历史的请求关闭 thinking（避免 Anthropic 要求回灌 thinking 签名导致 400）。
+- 缓存用量解析（F4/N6）：``cache_creation_input_tokens`` / ``cache_read_input_tokens``，缺字段为 0。
 - 异常转为 ``StreamEvent(err=...)``；``CancelledError`` 透传以支持 task 取消。
 """
 
@@ -20,15 +18,14 @@ from collections.abc import AsyncIterator
 import anthropic
 
 from koyocode.config import ProviderConfig
-from koyocode.llm import Message, StreamEvent, ToolCall, ToolDefinition, Usage
-from koyocode.prompt import SYSTEM_PROMPT
+from koyocode.llm import Message, Request, StreamEvent, ToolCall, ToolDefinition, Usage
 
 _MAX_TOKENS = 4096
 _THINKING_BUDGET = 2048
 
 
 def _to_anthropic_tools(tools: list[ToolDefinition]) -> list[dict]:
-    """把协议无关 ``ToolDefinition`` 转为 anthropic tools 参数。"""
+    """把协议无关 ``ToolDefinition`` 转为 anthropic tools 参数（不另打断点，F3）。"""
     return [
         {"name": t.name, "description": t.description, "input_schema": t.input_schema}
         for t in tools
@@ -38,13 +35,6 @@ def _to_anthropic_tools(tools: list[ToolDefinition]) -> list[dict]:
 def _has_tool_history(msgs: list[Message]) -> bool:
     """消息历史中是否含工具调用/结果回合（用于决定是否关闭 thinking）。"""
     return any(m.tool_calls or m.tool_results for m in msgs)
-
-
-def _effective_system(suffix: str) -> str:
-    """拼出实际下发的 system 提示：``suffix`` 为空即内置 ``SYSTEM_PROMPT``。"""
-    if not suffix:
-        return SYSTEM_PROMPT
-    return SYSTEM_PROMPT + "\n\n" + suffix
 
 
 def _to_anthropic_messages(msgs: list[Message]) -> list[dict]:
@@ -88,6 +78,32 @@ def _to_anthropic_messages(msgs: list[Message]) -> list[dict]:
     return out
 
 
+def _append_reminder_anthropic(messages: list[dict], reminder: str) -> None:
+    """把 reminder 文本块并入末条 user 消息的 content（避免连续 user 触发 400，N3）。
+
+    末条非 user（如 assistant）时新起一条 user 消息承载 reminder。user 文本回合的
+    str content 先转为块列表，再追加 reminder 文本块。
+    """
+    if not messages or messages[-1]["role"] != "user":
+        messages.append({"role": "user", "content": [{"type": "text", "text": reminder}]})
+        return
+    last = messages[-1]
+    if isinstance(last["content"], str):
+        last["content"] = [{"type": "text", "text": last["content"]}] if last["content"] else []
+    last["content"].append({"type": "text", "text": reminder})
+
+
+def _build_anthropic_system(stable: str, environment: str) -> list[dict]:
+    """构造 anthropic system 入参：稳定块带 ``cache_control: ephemeral`` 断点、
+    环境块不带（F3/AC4）。二者分属不同内容块，缓存前缀 = 全部工具 + 稳定块。"""
+    blocks: list[dict] = []
+    if stable:
+        blocks.append({"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}})
+    if environment:
+        blocks.append({"type": "text", "text": environment})
+    return blocks
+
+
 class AnthropicProvider:
     """anthropic 协议的 Provider 实现。"""
 
@@ -106,25 +122,26 @@ class AnthropicProvider:
     def model(self) -> str:
         return self._cfg.model
 
-    async def stream(
-        self,
-        msgs: list[Message],
-        tools: list[ToolDefinition],
-        system_suffix: str = "",
-    ) -> AsyncIterator[StreamEvent]:
+    async def stream(self, req: Request) -> AsyncIterator[StreamEvent]:
+        # system 分两块：稳定块打缓存断点、环境块不打（F3）。
+        system_blocks = _build_anthropic_system(req.system.stable, req.system.environment)
+        messages = _to_anthropic_messages(req.messages)
+        if req.reminder:
+            _append_reminder_anthropic(messages, req.reminder)
         params: dict = {
             "model": self._cfg.model,
             "max_tokens": _MAX_TOKENS,
-            "system": _effective_system(system_suffix),
-            "messages": _to_anthropic_messages(msgs),
+            "messages": messages,
         }
-        tool_defs = _to_anthropic_tools(tools)
+        if system_blocks:
+            params["system"] = system_blocks
+        tool_defs = _to_anthropic_tools(req.tools)
         if tool_defs:
             params["tools"] = tool_defs
         # 含工具历史的请求关闭 thinking：回灌带 tool_use 的 assistant 回合时，
         # Anthropic 要求附原 thinking 块（含 signature），而本章按 spec 丢弃
         # thinking 增量、不留签名，故对这类请求关闭 thinking 以避免 400。
-        if self._cfg.thinking and not _has_tool_history(msgs):
+        if self._cfg.thinking and not _has_tool_history(req.messages):
             params["thinking"] = {"type": "enabled", "budget_tokens": _THINKING_BUDGET}
 
         try:
@@ -150,10 +167,12 @@ class AnthropicProvider:
                 usage = Usage(
                     input_tokens=final_message.usage.input_tokens,
                     output_tokens=final_message.usage.output_tokens,
+                    cache_write=getattr(final_message.usage, "cache_creation_input_tokens", 0) or 0,
+                    cache_read=getattr(final_message.usage, "cache_read_input_tokens", 0) or 0,
                 )
         except asyncio.CancelledError:
             raise
-        except Exception as e:  # noqa: BLE001 — 任意运行时错误均转为 err 事件
+        except Exception as e:  # noqa: BLE001 - 任意运行时错误均转为 err 事件
             yield StreamEvent(err=e)
             return
         if calls:

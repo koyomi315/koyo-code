@@ -341,7 +341,7 @@ class KoyoCodeApp(App):
         """消费 ``Agent.run`` 事件流，分派文本/工具/用量/轮次/通知/done/err 到 UI 与历史。"""
         assert self.provider is not None
         assert self.turn_cancel is not None
-        agent = Agent(self.provider, self._tool_registry)
+        agent = Agent(self.provider, self._tool_registry, __version__)
         finished = False
         try:
             async for ev in agent.run(self.conv, self.mode, self.turn_cancel):

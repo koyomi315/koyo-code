@@ -3,9 +3,10 @@
 anthropic / openai 两个适配器各自封装官方 SDK，统一吐出文本增量
 （思考增量在适配器内部丢弃），对上层暴露与协议无关的接口。
 
-本章扩展：新增 ``ToolCall`` / ``ToolResult`` / ``ToolDefinition`` / ``ROLE_TOOL``
-等协议无关类型；``Message`` 可承载 assistant 工具调用回合与 ``ROLE_TOOL`` 结果回合；
-``StreamEvent`` 增 ``tool_calls`` 字段以在 turn 结束时上抛模型请求的工具调用。
+ch05 扩展（系统提示工程化）：``Provider.stream`` 入参改为 ``Request`` dataclass，
+承载 ``messages / tools / system{stable, environment} / reminder``；``System`` 区分
+可缓存稳定块与不缓存环境块（F3）；``Usage`` 增缓存写/读字段（F4）。系统提示由 agent
+传入，llm 不再 import prompt（打破潜在循环依赖）。
 """
 
 from collections.abc import AsyncIterator
@@ -51,6 +52,10 @@ class Usage:
     """本轮请求输入（含完整历史）token 数。"""
     output_tokens: int = 0
     """本轮响应输出 token 数。"""
+    cache_write: int = 0
+    """缓存写入 token 数（Anthropic: ``cache_creation_input_tokens``；OpenAI: 恒 0）。"""
+    cache_read: int = 0
+    """缓存读取 token 数（Anthropic: ``cache_read_input_tokens``；OpenAI: ``cached_tokens``）。"""
 
 
 @dataclass
@@ -81,12 +86,40 @@ class Message:
 
 
 @dataclass
+class System:
+    """系统提示的稳定块与变化环境块（F3）。
+
+    ``stable`` 为可缓存的稳定系统模块装配文本（跨轮逐字节一致，N1）；
+    ``environment`` 为不缓存的环境信息段（随采集时刻变化）。provider 据此分别打
+    缓存断点（stable）/ 不打（environment），二者物理上分属不同内容块。
+    """
+
+    stable: str = ""
+    environment: str = ""
+
+
+@dataclass
+class Request:
+    """一轮流式请求的全部入参（替换 stream 位置参数，F3/F6/F7）。
+
+    ``messages`` 为持久对话历史（不含本轮 reminder）；``tools`` 为本轮工具集
+    （普通=全量 / 规划=只读）；``system`` 承载稳定系统提示与环境段；``reminder`` 为
+    本轮 system-reminder 内容（已含标签，空=不注入，每轮动态构造、不写入持久历史，N3）。
+    """
+
+    messages: list[Message] = field(default_factory=list)
+    tools: list[ToolDefinition] = field(default_factory=list)
+    system: System = field(default_factory=System)
+    reminder: str = ""
+
+
+@dataclass
 class StreamEvent:
     """流式事件。
 
     四态语义：``text`` 为正文增量；``tool_calls`` 非空表示本轮模型请求执行这些
     工具（在 ``done`` 之前发出）；``done`` 表示本轮正常结束；``err`` 与 ``done`` 互斥。
-    ``usage`` 非空：本轮 token 用量，在 ``done`` 之前一次性发出。
+    ``usage`` 非空：本轮 token 用量（含缓存写/读），在 ``done`` 之前一次性发出。
     """
 
     text: str = ""
@@ -109,20 +142,14 @@ class Provider(Protocol):
         """状态栏右侧显示的模型名。"""
         ...
 
-    def stream(
-        self,
-        msgs: list[Message],
-        tools: list[ToolDefinition],
-        system_suffix: str = "",
-    ) -> AsyncIterator[StreamEvent]:
-        """发起一轮流式对话；内部注入 system prompt 与 thinking 配置。
+    def stream(self, req: Request) -> AsyncIterator[StreamEvent]:
+        """发起一轮流式对话；系统提示、工具、环境、reminder 均由 ``req`` 承载（F3/F6）。
 
-        ``tools`` 为工具定义列表（空表示本次不带工具）；``system_suffix`` 非空时
-        拼接到内置 ``SYSTEM_PROMPT`` 之后（Plan Mode 计划态约束），为空即普通模式；
-        思考增量内部丢弃；以 async generator 吐出 ``StreamEvent``（含可能的
-        ``tool_calls`` 与本轮结束前一次性上抛的 ``usage``）。调用方 cancel 对应
-        task 时，``async for`` 抛 ``CancelledError``，SDK 流由 ``async with``
-        上下文自动清理。
+        ``req.system.stable`` 走可缓存通道、``req.system.environment`` 走不缓存通道；
+        ``req.reminder`` 非空时按各协议安全织入消息通道（不写入持久历史，N3）。以 async
+        generator 吐出 ``StreamEvent``（含可能的 ``tool_calls`` 与本轮结束前一次性上抛的
+        ``usage``，含缓存写/读字段）。调用方 cancel 对应 task 时，``async for`` 抛
+        ``CancelledError``，SDK 流由 ``async with`` 上下文自动清理。
         """
         ...
 

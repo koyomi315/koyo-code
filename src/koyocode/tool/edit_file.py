@@ -20,6 +20,7 @@ class EditFileTool:
         return (
             "对文件中唯一匹配的 old_string 替换为 new_string；"
             "若匹配 0 处或多于 1 处则返回错误（不修改文件）。"
+            "编辑前请先用 read_file 读取目标文件，确认 old_string 唯一。"
         )
 
     def parameters(self) -> dict[str, Any]:

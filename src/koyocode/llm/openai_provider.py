@@ -1,13 +1,11 @@
 """openai 协议适配器：封装 ``AsyncOpenAI``，统一吐出 ``StreamEvent``。
 
-- 在消息列表首条注入内置 system prompt；``thinking`` 字段忽略。
-- ``cfg.base_url`` 非空时覆盖默认端点，可接入各类兼容服务。
-- 工具调用全流程（F3/F4/F6/F7）：
-  - 请求注入 ``tools``（``_to_openai_tools``）；
-  - 流式按 ``delta.tool_calls[i].index`` 累加分片，``delta.content`` 仍吐文本增量；
-  - 流结束后按 index 排序组装 ``ToolCall``（空 arguments 归一为 ``"{}"``）；
-  - ``_to_openai_messages`` 把 assistant 工具调用回合发为带 ``tool_calls`` 的 assistant
-    消息、``ROLE_TOOL`` 结果回合每个 ``ToolResult`` 发一条 ``role=tool`` 消息。
+- 系统提示拼为单条 system 消息（F3/F8）：``stable`` 在前、``environment`` 在后，stable
+  居前缀使端点前缀缓存命中稳定部分（兼容端点对多条 system 支持不一，统一单条）。
+- reminder 织入消息通道（F6/N3）：非空时追加一条尾部 user 消息（OpenAI 容忍连续 user/tool）。
+- 工具调用全流程：请求注入 ``tools``；流式按 ``delta.tool_calls[i].index`` 累加分片；
+  流结束后按 index 排序组装 ``ToolCall``（空 arguments 归一为 ``"{}"``）。
+- 缓存用量解析（F4/N6）：``prompt_tokens_details.cached_tokens``，``cache_write`` 恒 0，缺字段为 0。
 - 异常转为 ``err`` 事件；``CancelledError`` 透传以支持 task 取消。
 """
 
@@ -17,8 +15,7 @@ from collections.abc import AsyncIterator
 import openai
 
 from koyocode.config import ProviderConfig
-from koyocode.llm import Message, StreamEvent, ToolCall, ToolDefinition, Usage
-from koyocode.prompt import SYSTEM_PROMPT
+from koyocode.llm import Request, StreamEvent, ToolCall, ToolDefinition, Usage
 
 
 def _to_openai_tools(tools: list[ToolDefinition]) -> list[dict]:
@@ -36,14 +33,17 @@ def _to_openai_tools(tools: list[ToolDefinition]) -> list[dict]:
     ]
 
 
-def _to_openai_messages(msgs: list[Message], system_suffix: str = "") -> list[dict]:
-    """把协议无关 ``Message`` 列表转为 openai messages 参数（首条为 system）。
+def _to_openai_messages(req: Request) -> list[dict]:
+    """把 ``Request`` 转为 openai messages 参数。
 
-    ``system_suffix`` 非空时拼接到内置 ``SYSTEM_PROMPT`` 之后（Plan Mode）。
+    首条 system = ``stable``（若 ``environment`` 非空则拼为 ``stable + "\\n\\n" + environment``，
+    stable 居前缀）；``reminder`` 非空时追加尾部 user 消息。
     """
-    system = SYSTEM_PROMPT if not system_suffix else SYSTEM_PROMPT + "\n\n" + system_suffix
-    out: list[dict] = [{"role": "system", "content": system}]
-    for m in msgs:
+    system = "\n\n".join(p for p in (req.system.stable, req.system.environment) if p)
+    out: list[dict] = []
+    if system:
+        out.append({"role": "system", "content": system})
+    for m in req.messages:
         if m.role == "user":
             out.append({"role": "user", "content": m.content})
         elif m.role == "assistant":
@@ -67,6 +67,8 @@ def _to_openai_messages(msgs: list[Message], system_suffix: str = "") -> list[di
         else:  # ROLE_TOOL：每个结果发一条 role=tool 消息
             for r in m.tool_results:
                 out.append({"role": "tool", "tool_call_id": r.tool_call_id, "content": r.content})
+    if req.reminder:
+        out.append({"role": "user", "content": req.reminder})
     return out
 
 
@@ -88,13 +90,8 @@ class OpenAIProvider:
     def model(self) -> str:
         return self._cfg.model
 
-    async def stream(
-        self,
-        msgs: list[Message],
-        tools: list[ToolDefinition],
-        system_suffix: str = "",
-    ) -> AsyncIterator[StreamEvent]:
-        messages = _to_openai_messages(msgs, system_suffix)
+    async def stream(self, req: Request) -> AsyncIterator[StreamEvent]:
+        messages = _to_openai_messages(req)
         usage: Usage | None = None
         try:
             create_kwargs: dict = {
@@ -103,7 +100,7 @@ class OpenAIProvider:
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }
-            tool_defs = _to_openai_tools(tools)
+            tool_defs = _to_openai_tools(req.tools)
             if tool_defs:
                 create_kwargs["tools"] = tool_defs
             stream = await self._client.chat.completions.create(**create_kwargs)
@@ -114,9 +111,13 @@ class OpenAIProvider:
                     # include_usage 开启后，流末尾出现一个 choices 为空但带
                     # chunk.usage 的 chunk；此 chunk 无 delta 可读，跳过文本分支。
                     if chunk.usage is not None:
+                        details = getattr(chunk.usage, "prompt_tokens_details", None)
+                        cache_read = getattr(details, "cached_tokens", 0) or 0
                         usage = Usage(
                             input_tokens=chunk.usage.prompt_tokens,
                             output_tokens=chunk.usage.completion_tokens,
+                            cache_read=cache_read,
+                            cache_write=0,
                         )
                     continue
                 delta = chunk.choices[0].delta
@@ -134,7 +135,7 @@ class OpenAIProvider:
                             slot["args"] = slot.get("args", "") + tc.function.arguments
         except asyncio.CancelledError:
             raise
-        except Exception as e:  # noqa: BLE001 — 任意运行时错误均转为 err 事件
+        except Exception as e:  # noqa: BLE001 - 任意运行时错误转为 err 事件
             yield StreamEvent(err=e)
             return
         # 流结束：按 index 排序组装工具调用（空 arguments 归一为 "{}"）
