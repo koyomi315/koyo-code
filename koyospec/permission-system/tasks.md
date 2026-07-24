@@ -108,7 +108,7 @@
 
 **验证：** 单测（`tmp_path` fixture 作 root）：`persist_local_allow` 后 `local_path` 文件含该 allow 条、再 `new_engine` 重载仍 `ALLOW`；幂等：重复 `persist_local_allow` 不抛且不重复写文件。
 
-## T8: agent 接入权限（模式迁移 + 判定 + 人在回路）**文件：** `src/koyocode/agent.py`
+## T8: agent 接入权限（模式迁移 + 判定 + 人在回路） [x]**文件：** `src/koyocode/agent.py`
 **依赖：** T6, T7
 **步骤：**
 1. **模式迁移**：删除 agent 内 `Mode`/`MODE_NORMAL`/`MODE_PLAN` 定义，`from koyocode.permission import Mode`，全部改用 `Mode.DEFAULT`/`Mode.PLAN`；`run` 形参 `mode: Mode`；`mode == Mode.PLAN` 处不变（defs 选只读、plan_reminder 注入）。
@@ -122,7 +122,7 @@
 
 **验证：** `python -c "from koyocode.agent import new_agent"` 不抛（配合 T9）；轻量自检：表驱动断言 `request_approval` 在 `asyncio.CancelledError` 抛出时正确传播、不阻塞。
 
-## T9: agent 单测**文件：** `tests/test_agent.py`
+## T9: agent 单测 [x]**文件：** `tests/test_agent.py`
 **依赖：** T8
 **步骤：**
 1. 既有 ch04/ch05 用例：`new_agent(...)` 增 `engine` 实参（`permission.new_engine(str(tmp_path))[0]`）；`MODE_NORMAL`→`Mode.DEFAULT`；fake provider 签名不变。
