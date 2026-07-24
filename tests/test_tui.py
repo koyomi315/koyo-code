@@ -922,3 +922,90 @@ def test_approval_escape_cancels_with_deny_once(monkeypatch, tmp_path):
             assert not (tmp_path / "esc.txt").exists()
 
     _run(run())
+
+
+# ───────── mode 切换 UI 呈现与焦点（mode-switch-ui）─────────
+
+
+def test_shift_tab_does_not_append_history_message(monkeypatch):
+    """Shift+Tab 切换 mode 时不向对话历史区打印「已切换到」消息。"""
+    fake = FakeProvider(events=[StreamEvent(done=True)])
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.state == SessionState.IDLE
+            # 连按 4 次循环一遍四档模式
+            for _ in range(4):
+                await pilot.press("shift+tab")
+                await pilot.pause()
+            # 遍历历史区所有 Static 子 widget，断言无任一段含「已切换到」
+            history = app.query_one("#history", VerticalScroll)
+            texts = [str(w.content) for w in history.query(Static)]
+            assert not any("已切换到" in t for t in texts), f"历史区出现切换模式消息：{texts!r}"
+
+    _run(run())
+
+
+def test_shift_tab_keeps_input_focused(monkeypatch):
+    """Shift+Tab 切换后输入框保持聚焦、已输入文字不清空。"""
+    fake = FakeProvider(events=[StreamEvent(done=True)])
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = app.query_one("#input", appmod.InputArea)
+            inp.text = "draft"
+            await pilot.pause()
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert app.focused is inp
+            assert inp.text == "draft"
+
+    _run(run())
+
+
+def test_statusbar_shows_cycle_hint_only_in_non_default(monkeypatch):
+    """cycle 提示仅在非 DEFAULT 模式显示，循环回 DEFAULT 时消失。"""
+    fake = FakeProvider(events=[StreamEvent(done=True)])
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sb = app.query_one("#statusbar", Static)
+            # DEFAULT：无 cycle 提示
+            assert appmod._CYCLE_HINT not in str(sb.content)
+            # 切到 ACCEPT_EDITS：出现提示
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert appmod._CYCLE_HINT in str(sb.content)
+            # 再按三次回到 DEFAULT：提示消失
+            for _ in range(3):
+                await pilot.press("shift+tab")
+                await pilot.pause()
+            assert app.mode == Mode.DEFAULT
+            assert appmod._CYCLE_HINT not in str(sb.content)
+
+    _run(run())
+
+
+def test_border_subtitle_has_no_shift_tab_hint(monkeypatch):
+    """输入框边框副标题不含 Shift+Tab 提示，仍保留发送提示。"""
+    fake = FakeProvider(events=[StreamEvent(done=True)])
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            subtitle = app.query_one("#input-wrap").border_subtitle
+            assert "Shift+Tab" not in subtitle
+            assert "Enter 发送" in subtitle
+
+    _run(run())
