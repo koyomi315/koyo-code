@@ -1,8 +1,18 @@
-"""TUI App：状态机（选择/空闲/流式）、输入框、对话区、流式消费与计时、provider 选择。
+"""TUI App：状态机（选择/空闲/流式/待批准）、输入框、对话区、流式消费与计时、permission。
 
 说明：plan 中将 stream.py / select.py 拆为独立文件；本实现体量较小，按
 plan 允许的"可合并"条款，将流式与选择逻辑并入 ``app.py`` 以保持单会话
 交互的完整可读性。历史区使用 Textual 原生可选 widget，保证拖选有高亮反馈。
+
+ch06 扩展（权限系统）：
+
+- ``mode`` 改用 ``permission.Mode``（四档），由注入的 ``Engine`` 决定启动模式；
+  Shift+Tab 循环切换（仅 IDLE 生效，跨轮保持）。
+- 新增 ``SessionState.APPROVING`` 与待批准交互态：消费 ``ApprovalRequest``
+  事件后暂停事件循环，等用户三选一（↑↓ + 回车 / 数字键 1·2·3 / 便捷键 y/n/d）。
+- 全局 Ctrl+C/Esc 取消分派覆盖 APPROVING（否者会退出程序）；approving 态取消
+  先给 ``pending.respond`` 兜底 ``Outcome.DENY_ONCE`` 解开 agent 等待。
+- 状态栏左侧常驻显示当前权限模式（取代 provider 名）。
 """
 
 from __future__ import annotations
@@ -23,10 +33,11 @@ from textual.widgets import Markdown, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from koyocode import __version__
-from koyocode.agent import Agent, Mode, Phase
+from koyocode.agent import Agent, Phase
 from koyocode.config import ProviderConfig
 from koyocode.conversation import Conversation
 from koyocode.llm import Provider, new_provider
+from koyocode.permission import Mode, Outcome
 from koyocode.prompt import EXECUTE_DIRECTIVE, render_banner
 from koyocode.tool import Registry, new_default_registry
 
@@ -34,6 +45,13 @@ _TOOL_RESULT_MAX_LINES = 8
 _COPY_FEEDBACK_TIMEOUT = 2.0
 _SelectionPoint = tuple[int, int] | None
 _SelectionFingerprint = tuple[tuple[int, _SelectionPoint, _SelectionPoint], ...]
+
+# 待批准菜单三选项文案与 Outcome 映射（索引 0/1/2）。
+_APPROVAL_OPTIONS: list[tuple[str, Outcome]] = [
+    ("允许本次", Outcome.ALLOW_ONCE),
+    ("永久允许（写入本地配置）", Outcome.ALLOW_FOREVER),
+    ("拒绝本次", Outcome.DENY_ONCE),
+]
 
 
 def _fmt_tokens(n: int) -> str:
@@ -43,12 +61,29 @@ def _fmt_tokens(n: int) -> str:
     return f"{n / 1000:.1f}k"
 
 
+def _mode_label(mode: Mode) -> str:
+    """状态栏左侧常驻模式徽标文案。"""
+    if mode == Mode.DEFAULT:
+        return "DEFAULT"
+    if mode == Mode.ACCEPT_EDITS:
+        return "ACCEPT EDITS"
+    if mode == Mode.PLAN:
+        return "PLAN"
+    return "BYPASS"
+
+
+def next_mode(m: Mode) -> Mode:
+    """Shift+Tab 循环切换：DEFAULT→ACCEPT_EDITS→PLAN→BYPASS→DEFAULT。"""
+    return Mode((int(m) + 1) % 4)
+
+
 class SessionState(Enum):
-    """会话状态：选择 provider / 等待输入 / 接收流式。"""
+    """会话状态：选择 provider / 等待输入 / 接收流式 / 待批准。"""
 
     SELECTING = "selecting"
     IDLE = "idle"
     STREAMING = "streaming"
+    APPROVING = "approving"
 
 
 @dataclass
@@ -98,7 +133,7 @@ class KoyoCodeApp(App):
     .tool-result { color: $text-muted; }
     .tool-error { color: $error; text-style: bold; }
     .error-message { color: $error; text-style: bold; }
-    #streaming { height: auto; max-height: 8; padding: 0 1; }
+    #streaming { height: auto; max-height: 12; padding: 0 1; }
     #selector { height: 1fr; padding: 0 1; }
     #input-wrap { height: auto; border: solid $accent; padding: 0 1; }
     #prompt { width: 1; height: 3; color: $accent; }
@@ -120,15 +155,26 @@ class KoyoCodeApp(App):
         Binding("escape", "cancel_turn", "Cancel", show=False, priority=True),
     ]
 
-    def __init__(self, providers: list[ProviderConfig], registry: Registry | None = None) -> None:
+    def __init__(
+        self,
+        providers: list[ProviderConfig],
+        version: str = __version__,
+        registry: Registry | None = None,
+        engine=None,
+    ) -> None:
         super().__init__()
         self.providers = providers
+        self._version = version
         self.state = SessionState.SELECTING
         self.provider: Provider | None = None
         self.conv = Conversation()
         self.cur_reply = ""
         self.turn_start = 0.0
-        self.mode: Mode = Mode.NORMAL
+        # 权限：mode 由 engine 决定启动模式；无 engine 退化为 DEFAULT。
+        self.engine = engine
+        self.mode: Mode = engine.start_mode() if engine is not None else Mode.DEFAULT
+        self.pending = None  # ApprovalRequest | None
+        self.approve_cursor: int = 0
         self.iter = 0
         self.usage_in = 0
         self.usage_out = 0
@@ -159,7 +205,7 @@ class KoyoCodeApp(App):
         # TextArea 无原生 placeholder，用输入框边框副标题承载占位提示（AC7）。
         self.query_one(
             "#input-wrap"
-        ).border_subtitle = "Send a message...  (Alt+Enter 换行 · Enter 发送)"
+        ).border_subtitle = "Send a message...  (Alt+Enter 换行 · Enter 发送 · Shift+Tab 切换模式)"
         if len(self.providers) == 1:
             self.provider = new_provider(self.providers[0])
             self.state = SessionState.IDLE
@@ -191,10 +237,10 @@ class KoyoCodeApp(App):
     def _update_statusbar(self) -> None:
         if self.provider is None:
             return
-        mode_badge = "  [PLAN]" if self.mode == Mode.PLAN else ""
+        mode_label = _mode_label(self.mode)
         usage = f"  ↑{_fmt_tokens(self.usage_in)} ↓{_fmt_tokens(self.usage_out)} tok"
         self.query_one("#statusbar", Static).update(
-            f"● {self.provider.name}{mode_badge}    {self.provider.model}{usage}"
+            f"● {mode_label}    {self.provider.model}{usage}"
         )
 
     def _history(self) -> VerticalScroll:
@@ -314,7 +360,7 @@ class KoyoCodeApp(App):
         if stripped == "/do":
             self.query_one("#input", InputArea).clear()
             self._append_history_text("● /do", "user-message")
-            self.mode = Mode.NORMAL
+            self.mode = Mode.DEFAULT
             self.conv.add_user(EXECUTE_DIRECTIVE)
             self._update_statusbar()
             self._start_turn()
@@ -338,10 +384,10 @@ class KoyoCodeApp(App):
         self._timer = self.set_interval(0.1, self._tick)
 
     async def _consume_agent_events(self) -> None:
-        """消费 ``Agent.run`` 事件流，分派文本/工具/用量/轮次/通知/done/err 到 UI 与历史。"""
+        """消费 ``Agent.run`` 事件流，分派文本/工具/用量/轮次/通知/审批/done/err。"""
         assert self.provider is not None
         assert self.turn_cancel is not None
-        agent = Agent(self.provider, self._tool_registry, __version__)
+        agent = Agent(self.provider, self._tool_registry, self._version, self.engine)
         finished = False
         try:
             async for ev in agent.run(self.conv, self.mode, self.turn_cancel):
@@ -349,6 +395,15 @@ class KoyoCodeApp(App):
                     self._finish_with_error(ev.err)
                     finished = True
                     return
+                if ev.approval is not None:
+                    # 人在回路：切 approving 态、暂停事件循环（agent 正 await respond）
+                    self.pending = ev.approval
+                    self.approve_cursor = 0
+                    self.state = SessionState.APPROVING
+                    # 移除输入框焦点，让按键落到 App.on_key 分派待批准菜单
+                    self.set_focus(None)
+                    self._render_approving()
+                    continue
                 if ev.tool is not None:
                     if ev.tool.phase == Phase.START:
                         self._on_tool_start(ev.tool.name, ev.tool.args)
@@ -385,6 +440,60 @@ class KoyoCodeApp(App):
             if not finished:
                 # 用户取消：generator 未发 done 即终止，此处仍需收尾回到 IDLE。
                 self._finish_turn(self.cur_reply)
+
+    # ───────── 待批准态 ─────────
+    def _render_approving(self) -> None:
+        """渲染多行待批准块到 streaming 区。"""
+        assert self.pending is not None
+        req = self.pending
+        lines: list[str] = [f"● {req.name}({req.args})"]
+        if req.reason:
+            lines.append(f"  {req.reason}")
+        lines.append("是否继续?")
+        for idx, (label, _out) in enumerate(_APPROVAL_OPTIONS):
+            prefix = "> " if idx == self.approve_cursor else "  "
+            lines.append(f"  {prefix}{idx + 1}. {label}")
+        lines.append("  ↑↓ 选择 · 回车确认 · Esc 取消")
+        self.query_one("#streaming", Static).update("\n".join(lines))
+
+    def update_approving(self, key: str) -> None:
+        """APPROVING 态按键分派：维护光标、提交决策。"""
+        if self.pending is None:
+            return
+        if key in ("up", "k"):
+            self.approve_cursor = (self.approve_cursor - 1) % len(_APPROVAL_OPTIONS)
+            self._render_approving()
+            return
+        if key in ("down", "j"):
+            self.approve_cursor = (self.approve_cursor + 1) % len(_APPROVAL_OPTIONS)
+            self._render_approving()
+            return
+        outcome: Outcome | None = None
+        if key in ("enter", "space"):
+            outcome = _APPROVAL_OPTIONS[self.approve_cursor][1]
+        elif key == "1":
+            outcome = Outcome.ALLOW_ONCE
+        elif key == "2":
+            outcome = Outcome.ALLOW_FOREVER
+        elif key == "3":
+            outcome = Outcome.DENY_ONCE
+        elif key == "y":
+            outcome = Outcome.ALLOW_ONCE
+        elif key in ("n", "d"):
+            outcome = Outcome.DENY_ONCE
+        if outcome is None:
+            return
+        self._submit_approval(outcome)
+
+    def _submit_approval(self, outcome: Outcome) -> None:
+        """回传用户决策给 agent（解开 await）、回到 STREAMING 继续事件循环。"""
+        if self.pending is None:
+            return
+        respond = self.pending.respond
+        self.pending = None
+        self.state = SessionState.STREAMING
+        self._render_streaming()
+        respond.set_result(outcome)
 
     def _on_tool_start(self, name: str, args: str) -> None:
         """工具开始：先提交 preamble 文本到滚动历史，再加入 Running 指示队列。"""
@@ -459,6 +568,24 @@ class KoyoCodeApp(App):
         self.state = SessionState.IDLE
         self._apply_state()
 
+    # ───────── 全局按键 ─────────
+    def on_key(self, event: events.Key) -> None:
+        key = event.key
+        # Shift+Tab 循环切换模式（仅 IDLE 生效）
+        if key == "shift+tab" and self.state == SessionState.IDLE:
+            event.stop()
+            self.mode = next_mode(self.mode)
+            self._append_history_text(
+                f"● 已切换到 {_mode_label(self.mode)} 模式", "notice-message"
+            )
+            self._update_statusbar()
+            return
+        # APPROVING 态分派待批准按键
+        if self.state == SessionState.APPROVING:
+            event.stop()
+            self.update_approving(key)
+            return
+
     # ───────── 退出 ─────────
     def _quit(self) -> None:
         if self._stream_task is not None and not self._stream_task.done():
@@ -474,13 +601,32 @@ class KoyoCodeApp(App):
     async def action_quit(self) -> None:
         if self._copy_selected_text():
             return
-        if self.state == SessionState.STREAMING and self.turn_cancel is not None:
-            # 流式态 Ctrl+C：取消本轮，不退出程序（F7）。
+        if self.state in (SessionState.STREAMING, SessionState.APPROVING) and \
+                self.turn_cancel is not None:
+            # 流式/审批态 Ctrl+C：取消本轮，不退出程序（F7）。
+            if self.state == SessionState.APPROVING and self.pending is not None:
+                # 兜底解开 agent 等待再取消
+                self.pending.respond.set_result(Outcome.DENY_ONCE)
+                self.pending = None
             self.turn_cancel.set()
             return
         self._quit()
 
     def action_cancel_turn(self) -> None:
-        """Esc：流式态取消本轮，不退出程序（F7）；其余状态忽略。"""
-        if self.state == SessionState.STREAMING and self.turn_cancel is not None:
+        """Esc：流式/审批态取消本轮，不退出程序（F7）；其余状态忽略。"""
+        if self.state in (SessionState.STREAMING, SessionState.APPROVING) and \
+                self.turn_cancel is not None:
+            if self.state == SessionState.APPROVING and self.pending is not None:
+                self.pending.respond.set_result(Outcome.DENY_ONCE)
+                self.pending = None
             self.turn_cancel.set()
+
+
+def new_app(
+    providers: list[ProviderConfig],
+    version: str,
+    registry: Registry,
+    engine,
+) -> KoyoCodeApp:
+    """装配 KoyoCodeApp（保持单返回，末尾增 ``engine`` 形参）。"""
+    return KoyoCodeApp(providers=providers, version=version, registry=registry, engine=engine)

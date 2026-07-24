@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import os
 
 from textual.containers import VerticalScroll
 from textual.geometry import Offset
@@ -14,7 +15,15 @@ from textual.widgets import Markdown, Static
 import koyocode.tui.app as appmod
 from koyocode.config import ProviderConfig
 from koyocode.llm import StreamEvent, ToolCall
+from koyocode.permission import Mode, Outcome
+from koyocode.permission import new_engine
 from koyocode.tui import KoyoCodeApp, SessionState
+
+
+def _engine():
+    """根于 cwd 的权限引擎（TUI 注入用，降级不抛）。"""
+    e, _ = new_engine(os.getcwd())
+    return e
 
 
 class FakeProvider:
@@ -60,7 +69,7 @@ def test_history_uses_selectable_native_widgets(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         async with app.run_test() as pilot:
             await pilot.pause()
             history = app.query_one("#history", VerticalScroll)
@@ -80,7 +89,7 @@ def test_streaming_text_is_partially_selectable(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         async with app.run_test() as pilot:
             await pilot.pause()
             app.cur_reply = "stream partial text"
@@ -99,14 +108,15 @@ def test_statusbar_text_is_selectable(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         async with app.run_test() as pilot:
             await pilot.pause()
             statusbar = app.query_one("#statusbar", Static)
             selected = statusbar.get_selection(Selection(None, None))
 
             assert selected is not None
-            assert "Fake" in selected[0]
+            # 左侧常驻权限模式 DEFAULT（取代 provider 名），右侧仍含 model 名
+            assert "DEFAULT" in selected[0]
             assert "fake-1" in selected[0]
 
     _run(run())
@@ -123,7 +133,7 @@ def test_completed_assistant_reply_uses_textual_markdown(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         async with app.run_test() as pilot:
             await pilot.pause()
             inp = app.query_one("#input", appmod.InputArea)
@@ -149,7 +159,7 @@ def test_single_provider_enters_idle(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app.state == SessionState.IDLE
@@ -169,7 +179,7 @@ def test_submit_and_stream_flow(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         async with app.run_test() as pilot:
             await pilot.pause()
             inp = app.query_one("#input", appmod.InputArea)
@@ -195,7 +205,7 @@ def test_error_event_keeps_session_alive(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         async with app.run_test() as pilot:
             await pilot.pause()
             inp = app.query_one("#input", appmod.InputArea)
@@ -223,7 +233,8 @@ def test_multi_provider_selection(monkeypatch):
             [
                 _provider_cfg("A", "model-a"),
                 _provider_cfg("B", "model-b"),
-            ]
+            ],
+            engine=_engine(),
         )
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -245,7 +256,7 @@ def test_ctrl_c_triggers_quit(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         called = {"v": False}
 
         def fake_quit():
@@ -268,7 +279,7 @@ def test_ctrl_c_copies_selection_without_quitting(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         copied = []
         called = {"quit": False}
 
@@ -305,7 +316,7 @@ def test_copy_selected_text_shows_feedback_once_for_same_selection(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         copied = []
         app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
         app.notify = lambda *args, **kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
@@ -337,7 +348,7 @@ def test_copy_selected_text_recopies_same_text_from_different_selection(monkeypa
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         copied = []
         app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
 
@@ -374,7 +385,7 @@ def test_mouse_up_copies_selection_and_stops_event(monkeypatch):
             self.stopped = True
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         copied = []
         app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
 
@@ -401,7 +412,7 @@ def test_copy_selected_text_ignores_out_of_range_selection(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         copied = []
         app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
 
@@ -428,7 +439,7 @@ def test_clear_copy_feedback_clears_inline_message(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._show_copy_feedback(4)
@@ -449,7 +460,7 @@ def test_copy_feedback_sits_above_input_wrap(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._show_copy_feedback(3)
@@ -479,7 +490,7 @@ def test_copy_feedback_replaces_previous_hide_timer(monkeypatch):
             self.stopped = True
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         timers = []
 
         def fake_set_timer(delay, callback):
@@ -514,7 +525,7 @@ def test_alt_enter_inserts_newline(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         async with app.run_test() as pilot:
             await pilot.pause()
             inp = app.query_one("#input", appmod.InputArea)
@@ -578,7 +589,7 @@ def test_tool_call_turn_renders_and_round_trips(monkeypatch):
     monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
 
     async def run():
-        app = KoyoCodeApp([_provider_cfg()])
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
         async with app.run_test() as pilot:
             await pilot.pause()
             inp = app.query_one("#input", appmod.InputArea)
@@ -596,5 +607,304 @@ def test_tool_call_turn_renders_and_round_trips(monkeypatch):
             assert msgs[1].tool_calls[0].name == "read_file"
             assert msgs[2].tool_results[0].is_error is False
             assert msgs[3].content == "已读取并总结完毕"
+
+    _run(run())
+
+
+# ───────── 权限系统：Shift+Tab / 待批准态（T11）─────────
+
+
+def test_shift_tab_cycles_modes(monkeypatch):
+    """IDLE 态连按 Shift+Tab 依次循环四档、停留 IDLE。"""
+    from koyocode.permission import Mode
+
+    fake = FakeProvider(events=[StreamEvent(done=True)])
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.state == SessionState.IDLE
+            order = [Mode.DEFAULT]
+            for _ in range(4):
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                order.append(app.mode)
+            # 循环 DEFAULT→ACCEPT_EDITS→PLAN→BYPASS→DEFAULT
+            assert order == [Mode.DEFAULT, Mode.ACCEPT_EDITS, Mode.PLAN, Mode.BYPASS, Mode.DEFAULT]
+            assert app.state == SessionState.IDLE  # 全程停留 IDLE
+
+    _run(run())
+
+
+def test_status_bar_shows_current_mode_no_provider_name(monkeypatch):
+    """状态栏左侧在各模式显示模式名，且不含 provider 名。"""
+    fake = FakeProvider(events=[StreamEvent(done=True)])
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg("SomeProviderName", "model-x")], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            sb = app.query_one("#statusbar", Static).content
+            assert "DEFAULT" in sb
+            assert "SomeProviderName" not in sb  # 不再显示 provider 名
+            assert "fake-1" in sb  # 右侧模型名保留
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert "ACCEPT EDITS" in app.query_one("#statusbar", Static).content
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert "PLAN" in app.query_one("#statusbar", Static).content
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert "BYPASS" in app.query_one("#statusbar", Static).content
+
+    _run(run())
+
+
+def test_mode_persists_across_turns(monkeypatch):
+    """Shift+Tab 切到 ACCEPT_EDITS 后再 begin_turn，app.mode 仍为 ACCEPT_EDITS。"""
+    fake = FakeProvider(events=[StreamEvent(text="ok"), StreamEvent(done=True)])
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert app.mode == Mode.ACCEPT_EDITS
+            # 一次完整 turn
+            inp = app.query_one("#input", appmod.InputArea)
+            inp.text = "hi"
+            await pilot.pause()
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if app.state == SessionState.IDLE:
+                    break
+            assert app.state == SessionState.IDLE
+            # mode 跨轮保持，未被重置
+            assert app.mode == Mode.ACCEPT_EDITS
+
+    _run(run())
+
+
+def test_approval_request_flows_to_approving(monkeypatch, tmp_path):
+    """default 下 write_file 触发 ApprovalRequest -> 切 APPROVING、pending 已设、cursor=0。"""
+    target = str(tmp_path / "to_approve.txt")
+    engine = new_engine(str(tmp_path))[0]
+
+    class _ApprovalProvider:
+        name = "Fake"
+        model = "fake-1"
+
+        def __init__(self):
+            self._first = True
+
+        async def stream(self, req):
+            if self._first:
+                self._first = False
+                yield StreamEvent(
+                    tool_calls=[
+                        ToolCall(id="a1", name="write_file", input=json.dumps({"path": target, "content": "x"}))
+                    ]
+                )
+                yield StreamEvent(done=True)
+            else:
+                yield StreamEvent(text="ok")
+                yield StreamEvent(done=True)
+
+    provider = _ApprovalProvider()
+    app = KoyoCodeApp([_provider_cfg()], engine=engine)
+
+    async def run():
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # on_mount 已用 new_provider 设置过 provider，这里旁路覆盖为脚本 provider
+            app.provider = provider
+            app.state = SessionState.IDLE
+            await pilot.pause()
+            # 直接触发一轮
+            app.conv.add_user("写文件")
+            # 调 _start_turn 模拟一次提交
+            app._start_turn()
+            for _ in range(40):
+                await pilot.pause()
+                if app.state == SessionState.APPROVING:
+                    break
+            assert app.state == SessionState.APPROVING
+            assert app.pending is not None
+            assert app.pending.name == "write_file"
+            assert app.approve_cursor == 0
+
+    _run(run())
+
+
+def test_approval_down_enter_returns_allow_forever(monkeypatch, tmp_path):
+    """APPROVING: 按 down 移到第 2 项、回车 -> respond 收到 ALLOW_FOREVER，回 STREAMING。"""
+    target = str(tmp_path / "af.txt")
+    engine = new_engine(str(tmp_path))[0]
+    fut_holder: dict = {}
+
+    class _ApprovalProvider:
+        name = "Fake"
+        model = "fake-1"
+
+        def __init__(self):
+            self._i = 0
+
+        async def stream(self, req):
+            self._i += 1
+            if self._i == 1:
+                yield StreamEvent(
+                    tool_calls=[
+                        ToolCall(id="a1", name="write_file", input=json.dumps({"path": target, "content": "x"}))
+                    ]
+                )
+                yield StreamEvent(done=True)
+            else:
+                yield StreamEvent(text="done")
+                yield StreamEvent(done=True)
+
+    provider = _ApprovalProvider()
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=engine)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.provider = provider
+            app.state = SessionState.IDLE
+            await pilot.pause()
+            app.conv.add_user("写文件")
+            app._start_turn()
+            for _ in range(40):
+                await pilot.pause()
+                if app.state == SessionState.APPROVING:
+                    break
+            # down -> cursor 1（ALLOW_FOREVER），enter 提交
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.approve_cursor == 1
+            fut = app.pending.respond
+            await pilot.press("enter")
+            await pilot.pause()
+            assert fut.done() and fut.result() == Outcome.ALLOW_FOREVER
+            # 提交后离开 APPROVING（STREAMING 继续直至 IDLE）
+            assert app.state != SessionState.APPROVING
+            # 等待完成
+            for _ in range(40):
+                await pilot.pause()
+                if app.state == SessionState.IDLE:
+                    break
+            assert app.state == SessionState.IDLE
+            assert (tmp_path / "af.txt").exists()
+
+    _run(run())
+
+
+def test_approval_number_keys(monkeypatch, tmp_path):
+    """数字键 1 -> ALLOW_ONCE、3 -> DENY_ONCE 直选。"""
+    engine = new_engine(str(tmp_path))[0]
+
+    class _ApprovalProvider:
+        name = "Fake"
+        model = "fake-1"
+
+        def __init__(self):
+            self._i = 0
+
+        async def stream(self, req):
+            self._i += 1
+            if self._i == 1:
+                yield StreamEvent(
+                    tool_calls=[
+                        ToolCall(id="a1", name="write_file", input=json.dumps({"path": str(tmp_path / "n1.txt"), "content": "x"}))
+                    ]
+                )
+                yield StreamEvent(done=True)
+            else:
+                yield StreamEvent(text="done")
+                yield StreamEvent(done=True)
+
+    async def run():
+        provider = _ApprovalProvider()
+        app = KoyoCodeApp([_provider_cfg()], engine=engine)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.provider = provider
+            app.state = SessionState.IDLE
+            await pilot.pause()
+            app.conv.add_user("写文件")
+            app._start_turn()
+            for _ in range(40):
+                await pilot.pause()
+                if app.state == SessionState.APPROVING:
+                    break
+            fut = app.pending.respond
+            await pilot.press("1")
+            await pilot.pause()
+            assert fut.done() and fut.result() == Outcome.ALLOW_ONCE
+
+    _run(run())
+
+
+def test_approval_escape_cancels_with_deny_once(monkeypatch, tmp_path):
+    """APPROVING 态按 Esc：兜底 respond DENY_ONCE、应用未退出、本轮被取消。"""
+    engine = new_engine(str(tmp_path))[0]
+
+    class _ApprovalProvider:
+        name = "Fake"
+        model = "fake-1"
+
+        def __init__(self):
+            self._i = 0
+
+        async def stream(self, req):
+            self._i += 1
+            if self._i == 1:
+                yield StreamEvent(
+                    tool_calls=[
+                        ToolCall(id="a1", name="write_file", input=json.dumps({"path": str(tmp_path / "esc.txt"), "content": "x"}))
+                    ]
+                )
+                yield StreamEvent(done=True)
+            else:
+                yield StreamEvent(text="done")
+                yield StreamEvent(done=True)
+
+    async def run():
+        provider = _ApprovalProvider()
+        app = KoyoCodeApp([_provider_cfg()], engine=engine)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.provider = provider
+            app.state = SessionState.IDLE
+            await pilot.pause()
+            app.conv.add_user("写文件")
+            app._start_turn()
+            for _ in range(40):
+                await pilot.pause()
+                if app.state == SessionState.APPROVING:
+                    break
+            fut = app.pending.respond
+            await pilot.press("escape")
+            await pilot.pause()
+            # 兜底解开 agent 等待
+            assert fut.done() and fut.result() == Outcome.DENY_ONCE
+            # 应用未退出（仍可继续交互）
+            assert app._running
+            # 等收尾回 IDLE
+            for _ in range(40):
+                await pilot.pause()
+                if app.state == SessionState.IDLE:
+                    break
+            assert app.state == SessionState.IDLE
+            assert not (tmp_path / "esc.txt").exists()
 
     _run(run())

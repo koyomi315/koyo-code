@@ -137,7 +137,7 @@
 
 **验证：** `pytest tests/test_agent.py -q`；`pytest -q --timeout=30 tests/test_agent.py` 无超时；`python -X dev` 跑测试无 `Runtikoyoarning: coroutine ... was never awaited`。
 
-## T10: TUI 接入（模式切换 + 待批准态）**文件：** `src/koyocode/tui/app.py`、`src/koyocode/tui/stream.py`、`src/koyocode/tui/view.py`
+## T10: TUI 接入（模式切换 + 待批准态） [x]**文件：** `src/koyocode/tui/app.py`、`src/koyocode/tui/stream.py`、`src/koyocode/tui/view.py`
 **依赖：** T8
 **步骤：**
 1. `app.py`：`koyoCodeApp.mode: Mode`；加 `engine: Engine`、`pending: ApprovalRequest | None`、`approve_cursor: int = 0`（待批准菜单光标）；`new_app(providers, version, registry, engine) -> koyoCodeApp`（**保持单返回，仅末尾增形参**）存引擎、`self.mode = engine.start_mode()`；`SessionState.APPROVING` 枚举值；`on_key` 在 `APPROVING` 分派 `update_approving`；**全局 ctrl+c/esc 分派条件 `self.state == SessionState.STREAMING` 改为 `self.state in (SessionState.STREAMING, SessionState.APPROVING)`**，approving 态取消时先 `self.pending.respond.set_result(Outcome.DENY_ONCE)` 再 `self._cancel_turn()`；**新增 `case "shift+tab":`（仅 `self.state == SessionState.IDLE` 生效）`self.mode = next_mode(self.mode)` 并通过 `RichLog.write(notice_block("已切换到 X 模式"))` 提示**；`next_mode(m: Mode) -> Mode` 为本模块小函数，`Mode((int(m) + 1) % 4)`，循环 DEFAULT→ACCEPT_EDITS→PLAN→BYPASS→DEFAULT。
@@ -152,7 +152,7 @@
 
 **验证：** `python -m koyocode` 启动可进 idle；自动化部分见 T11。
 
-## T11: TUI 单测**文件：** `tests/test_tui.py`
+## T11: TUI 单测 [x]**文件：** `tests/test_tui.py`
 **依赖：** T10
 **步骤：**
 1. 既有 `/plan`·`/do` 用例适配 `permission.Mode`（`Mode.PLAN`/`Mode.DEFAULT`）。
