@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 
+from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -61,15 +62,13 @@ def _fmt_tokens(n: int) -> str:
     return f"{n / 1000:.1f}k"
 
 
-def _mode_label(mode: Mode) -> str:
-    """状态栏左侧常驻模式徽标文案。"""
-    if mode == Mode.DEFAULT:
-        return "DEFAULT"
-    if mode == Mode.ACCEPT_EDITS:
-        return "ACCEPT EDITS"
-    if mode == Mode.PLAN:
-        return "PLAN"
-    return "BYPASS"
+_MODE_VISUAL: dict[Mode, tuple[str, str]] = {
+    Mode.DEFAULT: ("DEFAULT", ""),  # 不染色（默认前景）
+    Mode.ACCEPT_EDITS: ("ACCEPT EDITS", "#FFB347"),  # 琥珀黄
+    Mode.PLAN: ("PLAN", "#4FC3F7"),  # 青蓝
+    Mode.BYPASS: ("BYPASS", "#FF5252"),  # 红
+}
+_CYCLE_HINT = "(shift+tab to cycle)"
 
 
 def next_mode(m: Mode) -> Mode:
@@ -205,7 +204,7 @@ class KoyoCodeApp(App):
         # TextArea 无原生 placeholder，用输入框边框副标题承载占位提示（AC7）。
         self.query_one(
             "#input-wrap"
-        ).border_subtitle = "Send a message...  (Alt+Enter 换行 · Enter 发送 · Shift+Tab 切换模式)"
+        ).border_subtitle = "Send a message...  (Alt+Enter 换行 · Enter 发送)"
         if len(self.providers) == 1:
             self.provider = new_provider(self.providers[0])
             self.state = SessionState.IDLE
@@ -237,11 +236,16 @@ class KoyoCodeApp(App):
     def _update_statusbar(self) -> None:
         if self.provider is None:
             return
-        mode_label = _mode_label(self.mode)
+        label, color = _MODE_VISUAL[self.mode]
         usage = f"  ↑{_fmt_tokens(self.usage_in)} ↓{_fmt_tokens(self.usage_out)} tok"
-        self.query_one("#statusbar", Static).update(
-            f"● {mode_label}    {self.provider.model}{usage}"
-        )
+        segments: list[tuple[str, str]] = [
+            ("● ", color),
+            (label, color),
+        ]
+        if self.mode != Mode.DEFAULT:
+            segments.append((f" {_CYCLE_HINT}", "dim"))
+        segments.append((f"    {self.provider.model}{usage}", ""))
+        self.query_one("#statusbar", Static).update(Text.assemble(*segments))
 
     def _history(self) -> VerticalScroll:
         return self.query_one("#history", VerticalScroll)
@@ -575,8 +579,8 @@ class KoyoCodeApp(App):
         if key == "shift+tab" and self.state == SessionState.IDLE:
             event.stop()
             self.mode = next_mode(self.mode)
-            self._append_history_text(f"● 已切换到 {_mode_label(self.mode)} 模式", "notice-message")
             self._update_statusbar()
+            self.query_one("#input", InputArea).focus()
             return
         # APPROVING 态分派待批准按键
         if self.state == SessionState.APPROVING:
