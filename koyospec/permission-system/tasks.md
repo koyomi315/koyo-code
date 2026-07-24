@@ -67,7 +67,7 @@
 
 **验证：** 单测：`parse_rule("Bash(git *)")`、`parse_rule("Read")` 正确；`match_pattern("git *","git status")` 真、`"git *","npm i"` 假；`match_pattern("src/**","src/a/b.py")` 真、`"src/**","docs/x"` 假；同层 deny 与 allow 同时命中时 `match` 返回 `Decision.DENY`。
 
-## T5: 配置加载与映射**文件：** `src/koyocode/permission/settings.py`
+## T5: 配置加载与映射 [x]**文件：** `src/koyocode/permission/settings.py`
 **依赖：** T1, T4
 **步骤：**
 1. `@dataclass class Settings`：`default_mode: str = ""`、`permissions: PermissionsBlock = field(default_factory=...)`；`PermissionsBlock` 含 `allow: list[str]` / `deny: list[str]`。
