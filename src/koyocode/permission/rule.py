@@ -59,12 +59,17 @@ class RuleSet:
 
 
 def _glob_to_regex(segment: str) -> str:
-    """单段 glob -> 正则：``*`` 匹配段内任意字符（不含 ``/``），其余逐字转义。"""
+    """单段 glob -> 正则：``*`` 匹配段内任意字符（不含 ``/``），反斜杠转义下一字面字符，
+    其余逐字转义。"""
     out: list[str] = []
     i = 0
     n = len(segment)
     while i < n:
         c = segment[i]
+        if c == "\\" and i + 1 < n:
+            out.append(re.escape(segment[i + 1]))
+            i += 2
+            continue
         if c == "*":
             out.append("[^/]*")
         else:
@@ -102,13 +107,21 @@ def _match_segments(pat_segs: list[str], tgt_segs: list[str]) -> bool:
 
 
 def _match_command_glob(pattern: str, target: str) -> bool:
-    """命令 glob：``*``/``**`` 匹配任意字符（含空格），整串 fullmatch。"""
+    """命令 glob：``*``/``**`` 匹配任意字符（含空格），反斜杠转义下一字面字符，整串 fullmatch。"""
     out: list[str] = []
-    for c in pattern:
+    i = 0
+    n = len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "\\" and i + 1 < n:
+            out.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
         if c == "*":
             out.append(".*")
         else:
             out.append(re.escape(c))
+        i += 1
     return re.fullmatch("".join(out), target) is not None
 
 

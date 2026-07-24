@@ -39,6 +39,16 @@ def test_match_pattern_path_glob() -> None:
     assert match_pattern("*.py", "sub/a.py") is False  # * 不跨段
 
 
+def test_match_pattern_escaped_glob_is_literal() -> None:
+    """反斜杠转义的字面星号不应被当成通配（精确规则不被泛化）。"""
+    # 命令：含字面 * 的精确命令命中，含其它前后的串不命中
+    assert match_pattern("git push \\* origin", "git push * origin", "Bash") is True
+    assert match_pattern("git push \\* origin", "git push x origin", "Bash") is False
+    # 路径：转义星号作为字面文件名
+    assert match_pattern("a\\*b.py", "a*b.py") is True
+    assert match_pattern("a\\*b.py", "axxb.py") is False
+
+
 def test_ruleset_deny_priority_over_allow() -> None:
     rs = RuleSet(
         allow=[Rule("Bash", "git *", allow=True)],

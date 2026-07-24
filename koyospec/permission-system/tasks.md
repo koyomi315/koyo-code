@@ -79,7 +79,7 @@
 
 **验证：** 单测：缺失文件得空且不抛；非法 YAML 抛 `SettingsError`；`to_rule_set` 跳过非法条；`friendly_name`/`categorize`（含未知工具→EXEC、read_only 优先）/`extract_target`（各工具字段、解析失败 ok=False）各分支正确。
 
-## T6: 引擎与前四层流水线**文件：** `src/koyocode/permission/engine.py`
+## T6: 引擎与前四层流水线 [x]**文件：** `src/koyocode/permission/engine.py`
 **依赖：** T1, T2, T3, T4, T5
 **步骤：**
 1. `@dataclass class Engine`（见 plan）：`root, blacklist, user/project/local RuleSet, local_path, start_mode`。
@@ -100,7 +100,7 @@
 
 **验证：** 单测：逐层短路（黑名单先于沙箱/规则；deny 规则先于模式；allow 规则不进模式）；跳层放行（非 EXEC 不被黑名单拦、Bash 不被沙箱拦）；模式矩阵逐档逐类断言（含 plan 行 Write/Exec→Ask）；三级优先级（本地 deny 盖项目 allow 等）；`resolve_root` 失败仍得非 None 引擎。
 
-## T7: 会话与永久规则写入**文件：** `src/koyocode/permission/persist.py`
+## T7: 会话与永久规则写入 [x]**文件：** `src/koyocode/permission/persist.py`
 **依赖：** T5, T6
 **步骤：**
 1. `def rule_for(call: ToolCall) -> tuple[Rule, str, bool]`：据 `extract_target` + `friendly_name` 生成**精确**规则（内存 Rule + YAML 串两种形态）——`bash`→`Bash(<command>)`；文件类→`Write(<relpath>)` / `Read(<relpath>)` 等（relpath = 相对 root 的 slash 路径）；bash 命令串经 `escape_glob` 转义字面 glob 元字符防止规则被泛化；解析失败/未知→`(Rule("","",False), "", False)`。
