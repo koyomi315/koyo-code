@@ -16,7 +16,30 @@ import os
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-__all__ = ["eval_symlinks_or_ancestor", "resolve_root", "sandbox_ok"]
+__all__ = ["eval_symlinks_or_ancestor", "relative_to_root", "resolve_root", "sandbox_ok"]
+
+
+def relative_to_root(root: str, target: str) -> str:
+    """规整文件目标为项目相对 slash 路径（规则匹配与持久化规则生成共用，保证两侧一致）。
+
+    规则里的文件模式按项目相对路径书写（如 ``Write(src/**)``），而工具调用传入的 ``path``
+    可能是绝对路径或含符号链接。本函数把任一形态统一为相对 ``root`` 的 slash 路径，使
+    命中判定与目标传入形态无关：
+
+    - 绝对路径：解析符号链接后取相对 ``root`` 的路径（``/var/.../root/src/a.py`` -> ``src/a.py``）。
+    - 相对路径：视为相对项目根，原样保留（仅规范分隔符）。
+    - ``root`` 外或解析失败：原样返回（沙箱已先拦，此处仅兜底）。
+    """
+    p = Path(target)
+    root_resolved = Path(root).resolve(strict=False)
+    try:
+        if p.is_absolute():
+            rel = p.resolve(strict=False).relative_to(root_resolved)
+        else:
+            rel = (root_resolved / p).relative_to(root_resolved)
+        return str(rel).replace("\\", "/")
+    except (ValueError, OSError):
+        return target.replace("\\", "/")
 
 
 def resolve_root(root: str) -> str:

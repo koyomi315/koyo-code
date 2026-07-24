@@ -77,6 +77,23 @@ def test_allow_rule_skips_mode(tmp_path: Path) -> None:
     assert d == Decision.ALLOW
 
 
+def test_path_rule_matches_absolute_target(tmp_path: Path) -> None:
+    """相对路径书写的文件规则（如 Write(src/**)）应匹配绝对路径调用（目标形态无关）。
+
+    回归：匹配前把文件目标规整为项目相对路径，使命中与模型传入绝对/相对路径无关。
+    """
+    e = _engine_in(tmp_path, local=RuleSet(allow=[Rule("Write", "src/**", allow=True)]))
+    # 绝对路径调用
+    d, _ = e.check(Mode.DEFAULT, _write(str(tmp_path / "src" / "a" / "b.py")), False)
+    assert d == Decision.ALLOW
+    # 相对路径调用同样命中
+    d, _ = e.check(Mode.DEFAULT, _write("src/a/b.py"), False)
+    assert d == Decision.ALLOW
+    # 不在 src 子树 -> 不命中 -> 落回 Ask
+    d, _ = e.check(Mode.DEFAULT, _write("docs/x"), False)
+    assert d == Decision.ASK
+
+
 # ── 模式矩阵 ──
 
 

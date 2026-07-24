@@ -58,3 +58,17 @@ def test_persist_then_sandbox_still_blocks_outside(tmp_path: Path) -> None:
     # 写 root 外路径仍被沙箱拦（规则只对精确路径生效）
     d, _ = engine.check(Mode.BYPASS, _write("/etc/passwd"), False)
     assert d == Decision.DENY
+
+
+def test_persist_write_abs_path_reloads_to_allow(tmp_path: Path) -> None:
+    """绝对路径 write_file 选「永久」后，重载引擎对同调用仍判 Allow（目标形态无关）。
+
+    回归：持久化规则按项目相对路径存储，匹配前同样规整目标，故绝对路径调用也能命中。
+    """
+    abs_target = str(tmp_path / "sub" / "a.py")
+    engine, _ = new_engine(str(tmp_path))
+    engine.persist_local_allow(_write(abs_target))
+    # 重载后同绝对路径调用 -> Allow（不弹窗）
+    e2, _ = new_engine(str(tmp_path))
+    d, _ = e2.check(Mode.DEFAULT, _write(abs_target), False)
+    assert d == Decision.ALLOW

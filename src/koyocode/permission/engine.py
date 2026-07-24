@@ -22,7 +22,7 @@ from koyocode.llm import ToolCall
 from koyocode.permission import Category, Decision, Mode, parse_mode
 from koyocode.permission.blacklist import hits_blacklist
 from koyocode.permission.rule import RuleSet
-from koyocode.permission.sandbox import resolve_root, sandbox_ok
+from koyocode.permission.sandbox import relative_to_root, resolve_root, sandbox_ok
 from koyocode.permission.settings import (
     SettingsError,
     categorize,
@@ -79,8 +79,9 @@ class Engine:
                 return Decision.DENY, f"路径在项目目录之外：{target}"
 
         # ③ 规则引擎：local → project → user，就近命中即返回
+        match_target = relative_to_root(self.root, target) if is_file else target
         for rs in (self.local, self.project, self.user):
-            d, hit = rs.match(friendly, target)
+            d, hit = rs.match(friendly, match_target)
             if hit:
                 if d == Decision.DENY:
                     return Decision.DENY, f"匹配 deny 规则：{friendly}({target})"

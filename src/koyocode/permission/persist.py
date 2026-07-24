@@ -15,6 +15,7 @@ import yaml
 
 from koyocode.llm import ToolCall
 from koyocode.permission.rule import Rule
+from koyocode.permission.sandbox import relative_to_root
 from koyocode.permission.settings import (
     SettingsError,
     extract_target,
@@ -36,23 +37,13 @@ def escape_glob(s: str) -> str:
     return "".join(out)
 
 
-def _relpath(root: str, abs_path: str) -> str:
-    """项目根相对 slash 路径；在根外则原样绝对路径（沙箱已先拦，此处兜底）。"""
-    try:
-        rel = Path(abs_path).resolve(strict=False)
-    except Exception:  # noqa: BLE001
-        rel = Path(abs_path)
-    root_p = Path(root)
-    try:
-        return str(rel.relative_to(root_p)).replace("\\", "/")
-    except ValueError:
-        return str(rel).replace("\\", "/")
-
-
 def rule_for(call: ToolCall, root: str = "") -> tuple[Rule, str, bool]:
     """为单次放行生成精确规则（内存 Rule + YAML 串）。
 
     返回 ``(rule, yaml_str, ok)``：``ok=False`` 表示解析失败 / 未知工具。
+
+    文件类目标的模式经 ``relative_to_root`` 规整为项目相对路径，与 ``Engine.check``
+    匹配时的规整一致--保证选「永久」后、重载引擎对同调用（含绝对路径）仍判放行。
     """
     target, is_file, ok = extract_target(call)
     friendly = friendly_name(call.name)
@@ -61,7 +52,7 @@ def rule_for(call: ToolCall, root: str = "") -> tuple[Rule, str, bool]:
         return Rule("", "", False), "", False
 
     if is_file:
-        pattern = escape_glob(_relpath(root, target)) if root else escape_glob(target)
+        pattern = escape_glob(relative_to_root(root, target)) if root else escape_glob(target)
     else:
         pattern = escape_glob(target)
     rule = Rule(tool=friendly, pattern=pattern, allow=True)
