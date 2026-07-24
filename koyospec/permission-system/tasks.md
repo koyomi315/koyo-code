@@ -48,7 +48,7 @@
 
 **验证：** 单测：`rm -rf /`、`rm -fr ~`、`:(){ :|:& };:`、`dd if=/dev/zero of=/dev/sda` 命中；`rm -rf ./build`、`git status`、`ls -la` 不命中。
 
-## T3: 路径沙箱**文件：** `src/koyocode/permission/sandbox.py`
+## T3: 路径沙箱 [x]**文件：** `src/koyocode/permission/sandbox.py`
 **依赖：** 无
 **步骤：**
 1. `def resolve_root(root: str) -> str`：`Path(root).expanduser().resolve(strict=True)`（失败抛 `FileNotFoundError`）。
@@ -57,7 +57,7 @@
 
 **验证：** 单测（`tmp_path` fixture 造 root + 内外文件 + 符号链接 via `Path.symlink_to`）：root 内文件通过；**root 内但含多级未创建中间目录的新建文件路径通过**（专测祖先回退分支）；`/etc/passwd`、`../outside`、root 内指向 root 外目录的软链接被拒。
 
-## T4: 规则与匹配**文件：** `src/koyocode/permission/rule.py`
+## T4: 规则与匹配 [x]**文件：** `src/koyocode/permission/rule.py`
 **依赖：** 无
 **步骤：**
 1. `@dataclass class Rule: tool: str; pattern: str; allow: bool`；`@dataclass class RuleSet: allow: list[Rule]; deny: list[Rule]`。

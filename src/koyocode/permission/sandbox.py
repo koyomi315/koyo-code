@@ -1,0 +1,81 @@
+"""路径沙箱（N2）：把文件类工具的访问限制在项目根目录子树内。
+
+关键点：
+
+- 防软链接逃逸：对存在的目标用 ``Path.resolve(strict=True)``（跟随符号链接到真实绝对路径）。
+- 新建文件（含未创建的中间目录）：对不存在的目标，逐级回退到最近**已存在祖先**目录
+  ``resolve(strict=True)`` 后拼回剩余段——避免 ``Path.resolve(strict=True)`` 因目标不存在
+  抛错而误判。
+- 不硬编码路径分隔符：用 ``pathlib`` 与 ``os.sep``。
+- bash 命令执行不做路径围栏（无法可靠静态解析任意命令的文件访问，交黑名单+规则+模式）。
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+__all__ = ["eval_symlinks_or_ancestor", "resolve_root", "sandbox_ok"]
+
+
+def resolve_root(root: str) -> str:
+    """解析项目根：展开用户与符号链接、``strict=True`` 要求存在；失败抛 ``FileNotFoundError``。"""
+    return str(Path(root).expanduser().resolve(strict=True))
+
+
+def eval_symlinks_or_ancestor(abs_path: str) -> str:
+    """尽量解析符号链接的目标绝对路径。
+
+    - 目标存在：``Path(abs_path).resolve(strict=True)``（跟随软链接到真实路径）。
+    - 目标不存在（新建文件 / 含未创建中间目录）：逐级回退到最近**已存在祖先**目录，
+      对该祖先 ``resolve(strict=True)`` 后把剩余相对段拼回（保留待创建部分的字面形态）。
+      若整条路径都不存在（连根都取不到已存在祖先），回退到对整串非严格 resolve。
+    """
+    p = Path(abs_path)
+    try:
+        return str(p.resolve(strict=True))
+    except (FileNotFoundError, RuntimeError, OSError):
+        pass
+    # 回退：找最近的已存在祖先
+    ancestor = p
+    rest_parts: list[str] = []
+    while ancestor is not None and not ancestor.exists():
+        rest_parts.append(ancestor.name)
+        ancestor = ancestor.parent
+    if ancestor is not None and ancestor.exists():
+        base = ancestor.resolve(strict=True)
+        if rest_parts:
+            return str(base.joinpath(*reversed(rest_parts)))
+        return str(base)
+    # 退化：非严格解析（不跟随软链接、不要求存在）
+    return str(p.resolve(strict=False))
+
+
+def _is_within(root: str, resolved: str) -> bool:
+    """``resolved`` 是否等于或在 ``root`` 子树内（用 ``os.sep`` 前缀避免前缀误匹配）。"""
+    return resolved == root or resolved.startswith(root + os.sep)
+
+
+@dataclass
+class _EngineLike:
+    """沙箱判定所需的最小依赖：仅需要 ``root`` 字段（真实 ``Engine`` 是其超集）。"""
+
+    root: str
+
+
+def sandbox_ok(engine: _EngineLike, path: str) -> bool:
+    """``path`` 是否在 ``engine.root`` 子树内（N2）。
+
+    - 空 ``path`` 视为 ``engine.root``（通过）。
+    - 相对路径相对 ``engine.root`` 解析为绝对。
+    - 经 ``eval_symlinks_or_ancestor`` 解析符号链接后再做前缀比对。
+    """
+    root = engine.root
+    if not path:
+        return True
+    p = Path(path)
+    if not p.is_absolute():
+        p = Path(root) / p
+    resolved = eval_symlinks_or_ancestor(str(p))
+    return _is_within(root, resolved)
