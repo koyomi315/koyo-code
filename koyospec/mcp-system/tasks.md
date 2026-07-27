@@ -212,7 +212,7 @@
 
 **验证：** 在 `tests/test_mcp_config.py` 增加一个用例，读取此示例文件断言三个 server 都被解析成功（`monkeypatch.setenv("GITHUB_TOKEN", "x")` 等避免 undefined 噪音）。
 
-## T7: tmux 端到端实跑（CLAUDE.md 开发原则）**文件：** —
+## T7: [x] tmux 端到端实跑（CLAUDE.md 开发原则）**文件：** —
 **依赖：** T1–T6
 **步骤：**
 1. 准备一个真实可用的 stdio MCP server。优先用 `npx -y @modelcontextprotocol/server-everything`（官方示例 server，自带 echo / add 等基础工具）；若无 npx，可临时用一个最小 Python server（`uv run mcp dev examples/...` 风格）。
