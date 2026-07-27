@@ -15,7 +15,7 @@
 
 ---
 
-## T1: 添加 MCP Python SDK 依赖**文件：** `pyproject.toml`、`uv.lock`（自动生成）
+## T1: [x] 添加 MCP Python SDK 依赖**文件：** `pyproject.toml`、`uv.lock`（自动生成）
 **依赖：** 无
 **步骤：**
 1. 在 `[project]` 的 `dependencies` 列表追加 `"mcp>=1.0"`。
