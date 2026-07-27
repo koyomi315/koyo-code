@@ -14,7 +14,7 @@ from textual.widgets import Markdown, Static
 
 import koyocode.tui.app as appmod
 from koyocode.config import ProviderConfig
-from koyocode.llm import StreamEvent, ToolCall
+from koyocode.llm import StreamEvent, ToolUseBlock
 from koyocode.permission import Mode, Outcome, new_engine
 from koyocode.tui import KoyoCodeApp, SessionState
 
@@ -573,8 +573,10 @@ def test_tool_call_turn_renders_and_round_trips(monkeypatch):
             [
                 StreamEvent(text="我先读取该文件"),
                 StreamEvent(
-                    tool_calls=[
-                        ToolCall(id="c1", name="read_file", input=json.dumps({"path": str(target)}))
+                    tool_uses=[
+                        ToolUseBlock(
+                            id="c1", name="read_file", input=json.dumps({"path": str(target)})
+                        )
                     ]
                 ),
                 StreamEvent(done=True),
@@ -601,9 +603,9 @@ def test_tool_call_turn_renders_and_round_trips(monkeypatch):
                     break
             assert app.state == SessionState.IDLE
             msgs = app.conv.messages()
-            # [user, assistant(tool_calls), tool, assistant(最终文本)]
+            # [user, assistant(tool_uses), tool, assistant(最终文本)]
             assert [m.role for m in msgs] == ["user", "assistant", "tool", "assistant"]
-            assert msgs[1].tool_calls[0].name == "read_file"
+            assert msgs[1].tool_uses[0].name == "read_file"
             assert msgs[2].tool_results[0].is_error is False
             assert msgs[3].content == "已读取并总结完毕"
 
@@ -710,8 +712,8 @@ def test_approval_request_flows_to_approving(monkeypatch, tmp_path):
             if self._first:
                 self._first = False
                 yield StreamEvent(
-                    tool_calls=[
-                        ToolCall(
+                    tool_uses=[
+                        ToolUseBlock(
                             id="a1",
                             name="write_file",
                             input=json.dumps({"path": target, "content": "x"}),
@@ -765,8 +767,8 @@ def test_approval_down_enter_returns_allow_forever(monkeypatch, tmp_path):
             self._i += 1
             if self._i == 1:
                 yield StreamEvent(
-                    tool_calls=[
-                        ToolCall(
+                    tool_uses=[
+                        ToolUseBlock(
                             id="a1",
                             name="write_file",
                             input=json.dumps({"path": target, "content": "x"}),
@@ -829,8 +831,8 @@ def test_approval_number_keys(monkeypatch, tmp_path):
             self._i += 1
             if self._i == 1:
                 yield StreamEvent(
-                    tool_calls=[
-                        ToolCall(
+                    tool_uses=[
+                        ToolUseBlock(
                             id="a1",
                             name="write_file",
                             input=json.dumps({"path": str(tmp_path / "n1.txt"), "content": "x"}),
@@ -879,8 +881,8 @@ def test_approval_escape_cancels_with_deny_once(monkeypatch, tmp_path):
             self._i += 1
             if self._i == 1:
                 yield StreamEvent(
-                    tool_calls=[
-                        ToolCall(
+                    tool_uses=[
+                        ToolUseBlock(
                             id="a1",
                             name="write_file",
                             input=json.dumps({"path": str(tmp_path / "esc.txt"), "content": "x"}),

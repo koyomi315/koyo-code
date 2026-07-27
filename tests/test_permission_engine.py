@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from koyocode.llm import ToolCall
+from koyocode.llm import ToolUseBlock
 from koyocode.permission import Decision, Mode
 from koyocode.permission.engine import Engine, mode_fallback, new_engine
 from koyocode.permission.rule import Rule, RuleSet
@@ -18,16 +18,18 @@ def _engine_in(tmp_path: Path, **kw) -> Engine:
     return e
 
 
-def _read(path: str, call_id: str = "1") -> ToolCall:
-    return ToolCall(id=call_id, name="read_file", input=json.dumps({"path": path}))
+def _read(path: str, call_id: str = "1") -> ToolUseBlock:
+    return ToolUseBlock(id=call_id, name="read_file", input=json.dumps({"path": path}))
 
 
-def _write(path: str, call_id: str = "1") -> ToolCall:
-    return ToolCall(id=call_id, name="write_file", input=json.dumps({"path": path, "content": "x"}))
+def _write(path: str, call_id: str = "1") -> ToolUseBlock:
+    return ToolUseBlock(
+        id=call_id, name="write_file", input=json.dumps({"path": path, "content": "x"})
+    )
 
 
-def _bash(cmd: str, call_id: str = "1") -> ToolCall:
-    return ToolCall(id=call_id, name="bash", input=json.dumps({"command": cmd}))
+def _bash(cmd: str, call_id: str = "1") -> ToolUseBlock:
+    return ToolUseBlock(id=call_id, name="bash", input=json.dumps({"command": cmd}))
 
 
 # ── 逐层短路 ──

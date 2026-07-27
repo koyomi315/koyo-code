@@ -23,7 +23,7 @@ ROLE_TOOL: Literal["tool"] = "tool"
 
 
 @dataclass
-class ToolCall:
+class ToolUseBlock:
     """协议无关地承载模型发起的一次工具调用（流式拼接完成后）。
 
     ``id`` 为 provider 侧调用 id，回灌结果时配对；``input`` 为拼接完成的
@@ -36,7 +36,7 @@ class ToolCall:
 
 
 @dataclass
-class ToolResult:
+class ToolResultBlock:
     """协议无关地承载一次工具执行结果。"""
 
     tool_call_id: str
@@ -75,14 +75,14 @@ class ToolDefinition:
 class Message:
     """单条对话消息。
 
-    ``tool_calls`` 仅 assistant 回合使用（模型请求执行的工具调用）；
+    ``tool_uses`` 仅 assistant 回合使用（模型请求执行的工具调用）；
     ``tool_results`` 仅 ``ROLE_TOOL`` 回合使用（对应执行结果）。
     """
 
     role: Literal["user", "assistant", "tool"]
     content: str = ""
-    tool_calls: list[ToolCall] = field(default_factory=list)
-    tool_results: list[ToolResult] = field(default_factory=list)
+    tool_uses: list[ToolUseBlock] = field(default_factory=list)
+    tool_results: list[ToolResultBlock] = field(default_factory=list)
 
 
 @dataclass
@@ -117,13 +117,13 @@ class Request:
 class StreamEvent:
     """流式事件。
 
-    四态语义：``text`` 为正文增量；``tool_calls`` 非空表示本轮模型请求执行这些
+    四态语义：``text`` 为正文增量；``tool_uses`` 非空表示本轮模型请求执行这些
     工具（在 ``done`` 之前发出）；``done`` 表示本轮正常结束；``err`` 与 ``done`` 互斥。
     ``usage`` 非空：本轮 token 用量（含缓存写/读），在 ``done`` 之前一次性发出。
     """
 
     text: str = ""
-    tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_uses: list[ToolUseBlock] = field(default_factory=list)
     usage: Usage | None = None
     done: bool = False
     err: Exception | None = None
@@ -147,7 +147,7 @@ class Provider(Protocol):
 
         ``req.system.stable`` 走可缓存通道、``req.system.environment`` 走不缓存通道；
         ``req.reminder`` 非空时按各协议安全织入消息通道（不写入持久历史，N3）。以 async
-        generator 吐出 ``StreamEvent``（含可能的 ``tool_calls`` 与本轮结束前一次性上抛的
+        generator 吐出 ``StreamEvent``（含可能的 ``tool_uses`` 与本轮结束前一次性上抛的
         ``usage``，含缓存写/读字段）。调用方 cancel 对应 task 时，``async for`` 抛
         ``CancelledError``，SDK 流由 ``async with`` 上下文自动清理。
         """

@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from koyocode.tool import Result
+from koyocode.tool import ToolResult
 
 _MAX_MATCHES = 100
 
@@ -36,17 +36,19 @@ class GlobTool:
     def read_only(self) -> bool:
         return True
 
-    async def execute(self, args: str) -> Result:
+    async def execute(self, args: str) -> ToolResult:
         try:
             data = json.loads(args) if args.strip() else {}
         except json.JSONDecodeError as e:
-            return Result(is_error=True, content=f"参数 JSON 解析失败: {e}")
+            return ToolResult(is_error=True, content=f"参数 JSON 解析失败: {e}")
         if not isinstance(data, dict):
-            return Result(is_error=True, content=f"参数应为 JSON 对象，得到 {type(data).__name__}")
+            return ToolResult(
+                is_error=True, content=f"参数应为 JSON 对象，得到 {type(data).__name__}"
+            )
 
         pattern = data.get("pattern")
         if not isinstance(pattern, str) or not pattern:
-            return Result(is_error=True, content="缺少参数 pattern（字符串）")
+            return ToolResult(is_error=True, content="缺少参数 pattern（字符串）")
         root = Path(data.get("path") or ".")
 
         matches: list[str] = []
@@ -64,11 +66,11 @@ class GlobTool:
                 if count % 100 == 0:
                     await asyncio.sleep(0)
         except OSError as e:
-            return Result(is_error=True, content=f"glob 失败: {e}")
+            return ToolResult(is_error=True, content=f"glob 失败: {e}")
 
         if not matches:
-            return Result(content="无匹配")
+            return ToolResult(content="无匹配")
         text = "\n".join(sorted(matches))
         if truncated:
             text += "\n[truncated]"
-        return Result(content=text)
+        return ToolResult(content=text)

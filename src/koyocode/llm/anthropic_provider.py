@@ -5,7 +5,7 @@
 - reminder 织入消息通道（F6/N3）：非空时并入末条 user 消息的 content 块，避免连续
   user 触发 400；末条非 user 时新起一条 user。
 - 工具调用全流程：请求注入 ``tools``；流式仅取 ``text_delta``；流结束取
-  ``get_final_message`` 收集 ``tool_use`` 组装 ``ToolCall`` 一次性上抛。
+  ``get_final_message`` 收集 ``tool_use`` 组装 ``ToolUseBlock`` 一次性上抛。
 - 含工具历史的请求关闭 thinking（避免 Anthropic 要求回灌 thinking 签名导致 400）。
 - 缓存用量解析（F4/N6）：``cache_creation_input_tokens`` / ``cache_read_input_tokens``，缺字段为 0。
 - 异常转为 ``StreamEvent(err=...)``；``CancelledError`` 透传以支持 task 取消。
@@ -18,7 +18,7 @@ from collections.abc import AsyncIterator
 import anthropic
 
 from koyocode.config import ProviderConfig
-from koyocode.llm import Message, Request, StreamEvent, ToolCall, ToolDefinition, Usage
+from koyocode.llm import Message, Request, StreamEvent, ToolDefinition, ToolUseBlock, Usage
 
 _MAX_TOKENS = 4096
 _THINKING_BUDGET = 2048
@@ -34,7 +34,7 @@ def _to_anthropic_tools(tools: list[ToolDefinition]) -> list[dict]:
 
 def _has_tool_history(msgs: list[Message]) -> bool:
     """消息历史中是否含工具调用/结果回合（用于决定是否关闭 thinking）。"""
-    return any(m.tool_calls or m.tool_results for m in msgs)
+    return any(m.tool_uses or m.tool_results for m in msgs)
 
 
 def _to_anthropic_messages(msgs: list[Message]) -> list[dict]:
@@ -48,13 +48,13 @@ def _to_anthropic_messages(msgs: list[Message]) -> list[dict]:
         if m.role == "user":
             out.append({"role": "user", "content": m.content})
         elif m.role == "assistant":
-            if not m.tool_calls:
+            if not m.tool_uses:
                 out.append({"role": "assistant", "content": m.content})
             else:
                 content: list[dict] = []
                 if m.content:
                     content.append({"type": "text", "text": m.content})
-                for c in m.tool_calls:
+                for c in m.tool_uses:
                     content.append(
                         {
                             "type": "tool_use",
@@ -153,12 +153,12 @@ class AnthropicProvider:
                         if event.delta.type == "text_delta":
                             yield StreamEvent(text=event.delta.text)
                 final_message = await s.get_final_message()
-                calls: list[ToolCall] = []
+                calls: list[ToolUseBlock] = []
                 if final_message.stop_reason == "tool_use":
                     for block in final_message.content:
                         if block.type == "tool_use":
                             calls.append(
-                                ToolCall(
+                                ToolUseBlock(
                                     id=block.id,
                                     name=block.name,
                                     input=json.dumps(block.input),
@@ -176,6 +176,6 @@ class AnthropicProvider:
             yield StreamEvent(err=e)
             return
         if calls:
-            yield StreamEvent(tool_calls=calls)
+            yield StreamEvent(tool_uses=calls)
         yield StreamEvent(usage=usage)
         yield StreamEvent(done=True)

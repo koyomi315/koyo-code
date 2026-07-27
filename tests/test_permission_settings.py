@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from koyocode.llm import ToolCall
+from koyocode.llm import ToolUseBlock
 from koyocode.permission import Category
 from koyocode.permission.rule import RuleSet
 from koyocode.permission.settings import (
@@ -74,40 +74,40 @@ def test_categorize() -> None:
 
 
 def test_extract_target_file() -> None:
-    c = ToolCall(id="1", name="read_file", input=json.dumps({"path": "/a/b.py"}))
+    c = ToolUseBlock(id="1", name="read_file", input=json.dumps({"path": "/a/b.py"}))
     assert extract_target(c) == ("/a/b.py", True, True)
 
 
 def test_extract_target_write_missing_path() -> None:
-    c = ToolCall(id="1", name="write_file", input=json.dumps({"content": "x"}))
+    c = ToolUseBlock(id="1", name="write_file", input=json.dumps({"content": "x"}))
     target, is_file, ok = extract_target(c)
     assert is_file is True and ok is False
 
 
 def test_extract_target_glob_empty_path_defaults_dot() -> None:
-    c = ToolCall(id="1", name="glob", input=json.dumps({"pattern": "**/*.py"}))
+    c = ToolUseBlock(id="1", name="glob", input=json.dumps({"pattern": "**/*.py"}))
     assert extract_target(c) == (".", True, True)
 
 
 def test_extract_target_bash() -> None:
-    c = ToolCall(id="1", name="bash", input=json.dumps({"command": "ls -la"}))
+    c = ToolUseBlock(id="1", name="bash", input=json.dumps({"command": "ls -la"}))
     assert extract_target(c) == ("ls -la", False, True)
 
 
 def test_extract_target_bash_missing_command() -> None:
-    c = ToolCall(id="1", name="bash", input=json.dumps({"cwd": "/tmp"}))
+    c = ToolUseBlock(id="1", name="bash", input=json.dumps({"cwd": "/tmp"}))
     target, is_file, ok = extract_target(c)
     assert is_file is False and ok is False and target == ""
 
 
 def test_extract_target_bad_json() -> None:
-    c = ToolCall(id="1", name="read_file", input="{bad")
+    c = ToolUseBlock(id="1", name="read_file", input="{bad")
     _, is_file, ok = extract_target(c)
     assert is_file is True and ok is False
 
 
 def test_extract_target_unknown() -> None:
-    c = ToolCall(id="1", name="ghost", input=json.dumps({"x": 1}))
+    c = ToolUseBlock(id="1", name="ghost", input=json.dumps({"x": 1}))
     assert extract_target(c) == ("", False, False)
 
 

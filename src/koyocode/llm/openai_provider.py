@@ -4,7 +4,7 @@
   居前缀使端点前缀缓存命中稳定部分（兼容端点对多条 system 支持不一，统一单条）。
 - reminder 织入消息通道（F6/N3）：非空时追加一条尾部 user 消息（OpenAI 容忍连续 user/tool）。
 - 工具调用全流程：请求注入 ``tools``；流式按 ``delta.tool_calls[i].index`` 累加分片；
-  流结束后按 index 排序组装 ``ToolCall``（空 arguments 归一为 ``"{}"``）。
+  流结束后按 index 排序组装 ``ToolUseBlock``（空 arguments 归一为 ``"{}"``）。
 - 缓存用量解析（F4/N6）：``prompt_tokens_details.cached_tokens``，``cache_write`` 恒 0，缺字段为 0。
 - 异常转为 ``err`` 事件；``CancelledError`` 透传以支持 task 取消。
 """
@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 import openai
 
 from koyocode.config import ProviderConfig
-from koyocode.llm import Request, StreamEvent, ToolCall, ToolDefinition, Usage
+from koyocode.llm import Request, StreamEvent, ToolDefinition, ToolUseBlock, Usage
 
 
 def _to_openai_tools(tools: list[ToolDefinition]) -> list[dict]:
@@ -47,7 +47,7 @@ def _to_openai_messages(req: Request) -> list[dict]:
         if m.role == "user":
             out.append({"role": "user", "content": m.content})
         elif m.role == "assistant":
-            if not m.tool_calls:
+            if not m.tool_uses:
                 out.append({"role": "assistant", "content": m.content})
             else:
                 out.append(
@@ -60,7 +60,7 @@ def _to_openai_messages(req: Request) -> list[dict]:
                                 "type": "function",
                                 "function": {"name": c.name, "arguments": c.input or "{}"},
                             }
-                            for c in m.tool_calls
+                            for c in m.tool_uses
                         ],
                     }
                 )
@@ -140,7 +140,7 @@ class OpenAIProvider:
             return
         # 流结束：按 index 排序组装工具调用（空 arguments 归一为 "{}"）
         calls = [
-            ToolCall(
+            ToolUseBlock(
                 id=tool_calls_buf[i].get("id", ""),
                 name=tool_calls_buf[i].get("name", ""),
                 input=tool_calls_buf[i].get("args") or "{}",
@@ -148,6 +148,6 @@ class OpenAIProvider:
             for i in sorted(tool_calls_buf)
         ]
         if calls:
-            yield StreamEvent(tool_calls=calls)
+            yield StreamEvent(tool_uses=calls)
         yield StreamEvent(usage=usage)
         yield StreamEvent(done=True)

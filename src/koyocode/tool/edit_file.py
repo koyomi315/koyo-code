@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from koyocode.tool import Result
+from koyocode.tool import ToolResult
 
 
 class EditFileTool:
@@ -40,39 +40,41 @@ class EditFileTool:
     def read_only(self) -> bool:
         return False
 
-    async def execute(self, args: str) -> Result:
+    async def execute(self, args: str) -> ToolResult:
         try:
             data = json.loads(args) if args.strip() else {}
         except json.JSONDecodeError as e:
-            return Result(is_error=True, content=f"参数 JSON 解析失败: {e}")
+            return ToolResult(is_error=True, content=f"参数 JSON 解析失败: {e}")
         if not isinstance(data, dict):
-            return Result(is_error=True, content=f"参数应为 JSON 对象，得到 {type(data).__name__}")
+            return ToolResult(
+                is_error=True, content=f"参数应为 JSON 对象，得到 {type(data).__name__}"
+            )
 
         path = data.get("path")
         old_string = data.get("old_string")
         new_string = data.get("new_string")
         if not isinstance(path, str) or not path:
-            return Result(is_error=True, content="缺少参数 path（字符串）")
+            return ToolResult(is_error=True, content="缺少参数 path（字符串）")
         if not isinstance(old_string, str):
-            return Result(is_error=True, content="缺少参数 old_string（字符串）")
+            return ToolResult(is_error=True, content="缺少参数 old_string（字符串）")
         if not isinstance(new_string, str):
-            return Result(is_error=True, content="缺少参数 new_string（字符串）")
+            return ToolResult(is_error=True, content="缺少参数 new_string（字符串）")
 
         p = Path(path)
         try:
             content = p.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return Result(is_error=True, content=f"文件不存在: {path}")
+            return ToolResult(is_error=True, content=f"文件不存在: {path}")
         except UnicodeDecodeError:
-            return Result(is_error=True, content=f"文件非 UTF-8 文本，无法读取: {path}")
+            return ToolResult(is_error=True, content=f"文件非 UTF-8 文本，无法读取: {path}")
         except OSError as e:
-            return Result(is_error=True, content=f"读取失败: {e}")
+            return ToolResult(is_error=True, content=f"读取失败: {e}")
 
         n = content.count(old_string)
         if n == 0:
-            return Result(is_error=True, content="未找到匹配的内容")
+            return ToolResult(is_error=True, content="未找到匹配的内容")
         if n > 1:
-            return Result(
+            return ToolResult(
                 is_error=True,
                 content=f"匹配到 {n} 处，old_string 不唯一，请提供更长上下文使其唯一",
             )
@@ -81,6 +83,6 @@ class EditFileTool:
         try:
             p.write_text(new_content, encoding="utf-8")
         except OSError as e:
-            return Result(is_error=True, content=f"写回失败: {e}")
+            return ToolResult(is_error=True, content=f"写回失败: {e}")
 
-        return Result(content=f"已替换 1 处于 {path}")
+        return ToolResult(content=f"已替换 1 处于 {path}")

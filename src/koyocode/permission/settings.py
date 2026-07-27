@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from koyocode.llm import ToolCall
+from koyocode.llm import ToolUseBlock
 from koyocode.permission import Category
 from koyocode.permission.rule import Rule, RuleSet, parse_rule
 
@@ -148,7 +148,7 @@ def categorize(internal: str, read_only: bool) -> Category:
     return Category.EXEC
 
 
-def _parse_input(call: ToolCall) -> tuple[dict | None, bool]:
+def _parse_input(call: ToolUseBlock) -> tuple[dict | None, bool]:
     """解析 ``call.input`` 为 dict；返回 ``(data, ok)``，``ok=False`` 表示非对象或解析失败。"""
     raw = call.input
     if isinstance(raw, dict):
@@ -166,7 +166,7 @@ def _parse_input(call: ToolCall) -> tuple[dict | None, bool]:
     return data, True
 
 
-def extract_target(call: ToolCall) -> tuple[str, bool, bool]:
+def extract_target(call: ToolUseBlock) -> tuple[str, bool, bool]:
     """提取工具调用目标与形态。
 
     返回 ``(target, is_file, ok)``：

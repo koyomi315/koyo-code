@@ -11,7 +11,7 @@
 - ``persist_local_allow``：便捷重导出（同 ``Engine.persist_local_allow`` 方法）。
 
 前四层由 ``Engine.check`` 承载（黑名单→沙箱→规则→模式兜底，短路）；第五层人在回路由
-agent 在 Ask 后编排驱动（见 ``agent`` 包）。模块仅依赖 ``llm``（``ToolCall``）与标准库 +
+agent 在 Ask 后编排驱动（见 ``agent`` 包）。模块仅依赖 ``llm``（``ToolUseBlock``）与标准库 +
 ``pyyaml``，不感知 provider 协议。
 """
 

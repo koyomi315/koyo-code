@@ -9,7 +9,7 @@ import asyncio
 import json
 from typing import Any
 
-from koyocode.tool import Result, _truncate
+from koyocode.tool import ToolResult, _truncate
 
 _MAX_LINES = 10000
 _MAX_CHARS = 30000
@@ -39,17 +39,19 @@ class BashTool:
     def read_only(self) -> bool:
         return False
 
-    async def execute(self, args: str) -> Result:
+    async def execute(self, args: str) -> ToolResult:
         try:
             data = json.loads(args) if args.strip() else {}
         except json.JSONDecodeError as e:
-            return Result(is_error=True, content=f"参数 JSON 解析失败: {e}")
+            return ToolResult(is_error=True, content=f"参数 JSON 解析失败: {e}")
         if not isinstance(data, dict):
-            return Result(is_error=True, content=f"参数应为 JSON 对象，得到 {type(data).__name__}")
+            return ToolResult(
+                is_error=True, content=f"参数应为 JSON 对象，得到 {type(data).__name__}"
+            )
 
         command = data.get("command")
         if not isinstance(command, str) or not command:
-            return Result(is_error=True, content="缺少参数 command（字符串）")
+            return ToolResult(is_error=True, content="缺少参数 command（字符串）")
 
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -58,7 +60,7 @@ class BashTool:
                 stderr=asyncio.subprocess.PIPE,
             )
         except OSError as e:
-            return Result(is_error=True, content=f"启动命令失败: {e}")
+            return ToolResult(is_error=True, content=f"启动命令失败: {e}")
 
         try:
             stdout_b, stderr_b = await proc.communicate()
@@ -79,4 +81,4 @@ class BashTool:
         stderr = stderr_b.decode("utf-8", errors="replace") if stderr_b else ""
         text = f"exit_code: {proc.returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
         # 非零退出不设 is_error：按结果回灌让模型判断
-        return Result(content=_truncate(text, _MAX_LINES, _MAX_CHARS))
+        return ToolResult(content=_truncate(text, _MAX_LINES, _MAX_CHARS))

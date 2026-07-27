@@ -3,18 +3,18 @@
 import json
 from pathlib import Path
 
-from koyocode.llm import ToolCall
+from koyocode.llm import ToolUseBlock
 from koyocode.permission import Decision, Mode
 from koyocode.permission.engine import new_engine
 from koyocode.permission.persist import rule_for
 
 
-def _bash(cmd: str) -> ToolCall:
-    return ToolCall(id="1", name="bash", input=json.dumps({"command": cmd}))
+def _bash(cmd: str) -> ToolUseBlock:
+    return ToolUseBlock(id="1", name="bash", input=json.dumps({"command": cmd}))
 
 
-def _write(path: str) -> ToolCall:
-    return ToolCall(id="1", name="write_file", input=json.dumps({"path": path, "content": "x"}))
+def _write(path: str) -> ToolUseBlock:
+    return ToolUseBlock(id="1", name="write_file", input=json.dumps({"path": path, "content": "x"}))
 
 
 def test_rule_for_bash_exact_no_glob_wildcard() -> None:

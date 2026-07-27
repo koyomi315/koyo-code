@@ -10,7 +10,7 @@ ch05 扩展：每次 ``run`` 起始采集环境、装配稳定系统提示；每
 
 ch06 扩展（权限系统）：``Mode`` 迁至 ``permission`` 模块（四档）；``Agent`` 持有
 ``permission.Engine``；``execute_batched`` 在执行每个工具前调用 ``engine.check``——
-Allow 执行、Deny 直接产被拒 ``ToolResult``、Ask 发 ``ApprovalRequest`` 事件并
+Allow 执行、Deny 直接产被拒 ``ToolResultBlock``、Ask 发 ``ApprovalRequest`` 事件并
 ``await`` 用户三选一决策（第五层人在回路，由本模块编排驱动）。
 
 停止条件（各自干净收尾，保持历史合法）：自然完成、迭代上限、用户取消、
@@ -34,9 +34,9 @@ from koyocode.llm import (
     Provider,
     Request,
     System,
-    ToolCall,
     ToolDefinition,
-    ToolResult,
+    ToolResultBlock,
+    ToolUseBlock,
 )
 from koyocode.llm import Usage as LLMUsage
 from koyocode.permission import Decision, Engine, Mode, Outcome
@@ -136,7 +136,7 @@ def _ensure_assistant_tail(conv: Conversation, fallback: str) -> None:
         conv.add_assistant(fallback)
 
 
-def _all_unknown(registry: Registry, calls: list[ToolCall]) -> bool:
+def _all_unknown(registry: Registry, calls: list[ToolUseBlock]) -> bool:
     """本轮工具调用是否全部未注册；混入任一已注册工具即 False（视为有进展）。"""
     return all(registry.get(c.name) is None for c in calls)
 
@@ -146,7 +146,7 @@ class _StreamOutcome:
     """``_stream_once`` 的返回值载体（async generator 无法直接 return 值）。"""
 
     text: str = ""
-    calls: list[ToolCall] = field(default_factory=list)
+    calls: list[ToolUseBlock] = field(default_factory=list)
     usage: LLMUsage | None = None
     ok: bool = True
 
@@ -179,8 +179,8 @@ async def _stream_once(
                 return
             if se.usage is not None:
                 outcome.usage = se.usage
-            if se.tool_calls:
-                outcome.calls.extend(se.tool_calls)
+            if se.tool_uses:
+                outcome.calls.extend(se.tool_uses)
             if se.text:
                 outcome.text += se.text
                 yield Event(text=se.text)
@@ -194,7 +194,7 @@ async def _stream_once(
         outcome.ok = False
 
 
-def _end_event(calls: list[ToolCall], results: list[ToolResult | None], k: int) -> Event:
+def _end_event(calls: list[ToolUseBlock], results: list[ToolResultBlock | None], k: int) -> Event:
     """构造第 ``k`` 个调用的 ``Phase.END`` 事件（保序回灌，含被拒/取消项）。"""
     r = results[k]
     assert r is not None
@@ -210,7 +210,7 @@ def _end_event(calls: list[ToolCall], results: list[ToolResult | None], k: int) 
 
 
 def _finish_segment_cancelled(
-    results: list[ToolResult | None], calls: list[ToolCall], i: int, j: int, n: int
+    results: list[ToolResultBlock | None], calls: list[ToolUseBlock], i: int, j: int, n: int
 ) -> None:
     """本批有取消：给 [i,j) 之后到 n 的未执行项填取消结果；[i,j) 内由调用方先填好。"""
     _fill_cancelled(results, calls, j, n)
@@ -219,8 +219,8 @@ def _finish_segment_cancelled(
 
 
 async def _watched_execute(
-    registry: Registry, call: ToolCall, cancel: asyncio.Event
-) -> tuple[ToolResult, bool]:
+    registry: Registry, call: ToolUseBlock, cancel: asyncio.Event
+) -> tuple[ToolResultBlock, bool]:
     """执行单个工具调用，若期间 ``cancel`` 被 set 则尽快取消并返回「已取消」结果。
 
     返回 ``(result, completed)``；``completed=False`` 表示因取消而未跑完。
@@ -235,12 +235,14 @@ async def _watched_execute(
         )
         if exec_task in done:
             r = exec_task.result()
-            return ToolResult(tool_call_id=call.id, content=r.content, is_error=r.is_error), True
+            return ToolResultBlock(
+                tool_call_id=call.id, content=r.content, is_error=r.is_error
+            ), True
         exec_task.cancel()
         with contextlib.suppress(BaseException):
             await exec_task
         return (
-            ToolResult(tool_call_id=call.id, content=NOTICE_CANCELLED, is_error=True),
+            ToolResultBlock(tool_call_id=call.id, content=NOTICE_CANCELLED, is_error=True),
             False,
         )
     finally:
@@ -251,12 +253,12 @@ async def _watched_execute(
 
 
 def _fill_cancelled(
-    results: list[ToolResult | None], calls: list[ToolCall], start: int, end: int
+    results: list[ToolResultBlock | None], calls: list[ToolUseBlock], start: int, end: int
 ) -> None:
     """给尚未执行（``results[k] is None``）的调用填「已取消」结构化结果。"""
     for k in range(start, end):
         if results[k] is None:
-            results[k] = ToolResult(
+            results[k] = ToolResultBlock(
                 tool_call_id=calls[k].id, content=NOTICE_CANCELLED, is_error=True
             )
 
@@ -265,14 +267,14 @@ def _fill_cancelled(
 class _BatchOutcome:
     """``_execute_batched`` 的返回值载体。"""
 
-    results: list[ToolResult] = field(default_factory=list)
+    results: list[ToolResultBlock] = field(default_factory=list)
     completed: bool = True
 
 
 async def _execute_batched(
     agent: Agent,
     registry: Registry,
-    calls: list[ToolCall],
+    calls: list[ToolUseBlock],
     mode: Mode,
     cancel: asyncio.Event,
     outcome: _BatchOutcome,
@@ -281,7 +283,7 @@ async def _execute_batched(
 
     每个工具执行前调用 ``agent.engine.check(mode, call, read_only)``：
 
-    - **只读批**：逐个 check；Deny 预置被拒 ``ToolResult`` 不入并发；Allow 照旧并发
+    - **只读批**：逐个 check；Deny 预置被拒 ``ToolResultBlock`` 不入并发；Allow 照旧并发
       （只读永不 Ask，N3 并发不退化；若意外 Ask 按 Deny 兜底安全）。
     - **有副作用串行**：Allow→执行；Deny→被拒结果；Ask→``request_approval`` 等用户三选一。
 
@@ -289,7 +291,7 @@ async def _execute_batched(
     Deny 一致）。每个并发 task 只写自己下标，无数据竞争（N6）。
     """
     n = len(calls)
-    results: list[ToolResult | None] = [None] * n
+    results: list[ToolResultBlock | None] = [None] * n
     i = 0
     while i < n:
         if cancel.is_set():
@@ -318,11 +320,13 @@ async def _execute_batched(
             for k in range(i, j):
                 decision, reason = agent.engine.check(mode, calls[k], True)
                 if decision == Decision.DENY:
-                    results[k] = ToolResult(tool_call_id=calls[k].id, content=reason, is_error=True)
+                    results[k] = ToolResultBlock(
+                        tool_call_id=calls[k].id, content=reason, is_error=True
+                    )
                     deny_set.add(k)
                 elif decision == Decision.ASK:
                     # 只读永不 Ask；兜底安全拒绝
-                    results[k] = ToolResult(
+                    results[k] = ToolResultBlock(
                         tool_call_id=calls[k].id,
                         content="只读工具被要求确认，安全拒绝",
                         is_error=True,
@@ -361,7 +365,9 @@ async def _execute_batched(
                     outcome.completed = False
                     return
             elif decision == Decision.DENY:
-                results[k] = ToolResult(tool_call_id=calls[k].id, content=reason, is_error=True)
+                results[k] = ToolResultBlock(
+                    tool_call_id=calls[k].id, content=reason, is_error=True
+                )
             else:  # ASK：人在回路
                 # 借助 _execute_batched 自身的 async generator：yield 出审批事件，
                 # 供顶层消费者 set_result 后，批循环在此 await 恢复（见 run 透传）。
@@ -406,7 +412,7 @@ async def _execute_batched(
                         outcome.completed = False
                         return
                 else:  # DENY_ONCE
-                    results[k] = ToolResult(
+                    results[k] = ToolResultBlock(
                         tool_call_id=calls[k].id,
                         content=reason or "用户拒绝执行该操作",
                         is_error=True,
@@ -496,7 +502,7 @@ class Agent:
                 yield Event(done=True)
                 return
 
-            conv.add_assistant_with_tool_calls(stream_outcome.text, stream_outcome.calls)
+            conv.add_assistant_with_tool_uses(stream_outcome.text, stream_outcome.calls)
             unknown_run = (
                 unknown_run + 1 if _all_unknown(self._registry, stream_outcome.calls) else 0
             )

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from koyocode.tool import Result
+from koyocode.tool import ToolResult
 
 
 class WriteFileTool:
@@ -32,26 +32,28 @@ class WriteFileTool:
     def read_only(self) -> bool:
         return False
 
-    async def execute(self, args: str) -> Result:
+    async def execute(self, args: str) -> ToolResult:
         try:
             data = json.loads(args) if args.strip() else {}
         except json.JSONDecodeError as e:
-            return Result(is_error=True, content=f"参数 JSON 解析失败: {e}")
+            return ToolResult(is_error=True, content=f"参数 JSON 解析失败: {e}")
         if not isinstance(data, dict):
-            return Result(is_error=True, content=f"参数应为 JSON 对象，得到 {type(data).__name__}")
+            return ToolResult(
+                is_error=True, content=f"参数应为 JSON 对象，得到 {type(data).__name__}"
+            )
 
         path = data.get("path")
         content = data.get("content")
         if not isinstance(path, str) or not path:
-            return Result(is_error=True, content="缺少参数 path（字符串）")
+            return ToolResult(is_error=True, content="缺少参数 path（字符串）")
         if not isinstance(content, str):
-            return Result(is_error=True, content="缺少参数 content（字符串）")
+            return ToolResult(is_error=True, content="缺少参数 content（字符串）")
 
         p = Path(path)
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
         except OSError as e:
-            return Result(is_error=True, content=f"写入失败: {e}")
+            return ToolResult(is_error=True, content=f"写入失败: {e}")
 
-        return Result(content=f"已写入 {path}（{len(content.encode('utf-8'))} 字节）")
+        return ToolResult(content=f"已写入 {path}（{len(content.encode('utf-8'))} 字节）")

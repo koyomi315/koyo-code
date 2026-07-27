@@ -1,10 +1,10 @@
 """工具系统：统一工具抽象、执行结果、注册中心。
 
-对外暴露 ``Tool`` Protocol、``Result`` 值类型、``Registry`` 注册中心、
+对外暴露 ``Tool`` Protocol、``ToolResult`` 值类型、``Registry`` 注册中心、
 ``new_default_registry`` 工厂与 ``DEFAULT_TIMEOUT`` 常量。
 
 设计要点：
-- 工具 ``execute`` 永远以 ``Result`` 值类型返回，从不抛 Python 异常给上层
+- 工具 ``execute`` 永远以 ``ToolResult`` 值类型返回，从不抛 Python 异常给上层
   （F9/N4）。``Registry.execute`` 再兜一层 ``asyncio.wait_for`` 超时与异常捕获。
 - 零外部依赖、不感知 LLM 协议；仅 ``definitions()`` 借用 ``llm.ToolDefinition``
   作为导出载体。
@@ -21,7 +21,7 @@ DEFAULT_TIMEOUT: float = 30.0
 
 
 @dataclass
-class Result:
+class ToolResult:
     """工具执行结果——永远以值类型返回，从不抛 Python 异常给上层。"""
 
     content: str
@@ -48,7 +48,7 @@ class Tool(Protocol):
         """True=只读工具，可并发执行 & Plan Mode 放行。"""
         ...
 
-    async def execute(self, args: str) -> Result:
+    async def execute(self, args: str) -> ToolResult:
         """执行工具；``args`` 为 raw JSON 字符串，超时由外部 ``asyncio.wait_for`` 控制。"""
         ...
 
@@ -115,20 +115,20 @@ class Registry:
         t = self._tools.get(name)
         return t is not None and t.read_only()
 
-    async def execute(self, name: str, args: str, timeout: float = DEFAULT_TIMEOUT) -> Result:
-        """按名执行工具，受超时保护；任何失败包成 ``Result(is_error=True)``。
+    async def execute(self, name: str, args: str, timeout: float = DEFAULT_TIMEOUT) -> ToolResult:
+        """按名执行工具，受超时保护；任何失败包成 ``ToolResult(is_error=True)``。
 
         ``CancelledError`` 不被捕获（透传以支持 task 取消）。
         """
         tool = self.get(name)
         if tool is None:
-            return Result(is_error=True, content=f"未知工具: {name}")
+            return ToolResult(is_error=True, content=f"未知工具: {name}")
         try:
             return await asyncio.wait_for(tool.execute(args), timeout)
         except TimeoutError:
-            return Result(is_error=True, content=f"工具 {name} 执行超时（{timeout}s）")
+            return ToolResult(is_error=True, content=f"工具 {name} 执行超时（{timeout}s）")
         except Exception as e:  # noqa: BLE001 — 任意运行时错误均转为结构化错误
-            return Result(is_error=True, content=f"工具 {name} 异常: {e}")
+            return ToolResult(is_error=True, content=f"工具 {name} 异常: {e}")
 
 
 def new_default_registry() -> Registry:
@@ -137,7 +137,7 @@ def new_default_registry() -> Registry:
     各工具实现见同包下 ``read_file`` / ``write_file`` / ``edit_file`` / ``bash`` /
     ``glob_tool`` / ``grep_tool`` 模块。
     """
-    # 延迟导入避免循环依赖（工具模块反向依赖本模块的 Tool/Result/_truncate）。
+    # 延迟导入避免循环依赖（工具模块反向依赖本模块的 Tool/ToolResult/_truncate）。
     from koyocode.tool.bash import BashTool
     from koyocode.tool.edit_file import EditFileTool
     from koyocode.tool.glob_tool import GlobTool
@@ -158,7 +158,7 @@ def new_default_registry() -> Registry:
 __all__ = [
     "DEFAULT_TIMEOUT",
     "Registry",
-    "Result",
+    "ToolResult",
     "Tool",
     "new_default_registry",
 ]

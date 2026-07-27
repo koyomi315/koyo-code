@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from koyocode.llm import ToolCall
+from koyocode.llm import ToolUseBlock
 from koyocode.permission.rule import Rule
 from koyocode.permission.sandbox import relative_to_root
 from koyocode.permission.settings import (
@@ -37,7 +37,7 @@ def escape_glob(s: str) -> str:
     return "".join(out)
 
 
-def rule_for(call: ToolCall, root: str = "") -> tuple[Rule, str, bool]:
+def rule_for(call: ToolUseBlock, root: str = "") -> tuple[Rule, str, bool]:
     """为单次放行生成精确规则（内存 Rule + YAML 串）。
 
     返回 ``(rule, yaml_str, ok)``：``ok=False`` 表示解析失败 / 未知工具。
@@ -60,7 +60,7 @@ def rule_for(call: ToolCall, root: str = "") -> tuple[Rule, str, bool]:
     return rule, yaml_str, True
 
 
-def persist_local_allow(engine: object, call: ToolCall) -> None:
+def persist_local_allow(engine: object, call: ToolUseBlock) -> None:
     """把精确 allow 规则写入引擎的本地层文件 + 同步内存（异常向上抛，调用方记日志）。"""
     path = getattr(engine, "local_path", "")
     root = getattr(engine, "root", "")

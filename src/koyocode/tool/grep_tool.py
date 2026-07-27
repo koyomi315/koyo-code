@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from koyocode.tool import Result
+from koyocode.tool import ToolResult
 
 _MAX_HITS = 100
 _MAX_LINE = 1024 * 1024  # 单行超过 ~1MB 视为过长，跳过完整搜索
@@ -42,21 +42,23 @@ class GrepTool:
     def read_only(self) -> bool:
         return True
 
-    async def execute(self, args: str) -> Result:
+    async def execute(self, args: str) -> ToolResult:
         try:
             data = json.loads(args) if args.strip() else {}
         except json.JSONDecodeError as e:
-            return Result(is_error=True, content=f"参数 JSON 解析失败: {e}")
+            return ToolResult(is_error=True, content=f"参数 JSON 解析失败: {e}")
         if not isinstance(data, dict):
-            return Result(is_error=True, content=f"参数应为 JSON 对象，得到 {type(data).__name__}")
+            return ToolResult(
+                is_error=True, content=f"参数应为 JSON 对象，得到 {type(data).__name__}"
+            )
 
         pattern = data.get("pattern")
         if not isinstance(pattern, str) or not pattern:
-            return Result(is_error=True, content="缺少参数 pattern（字符串）")
+            return ToolResult(is_error=True, content="缺少参数 pattern（字符串）")
         try:
             rx = re.compile(pattern)
         except re.error as e:
-            return Result(is_error=True, content=f"正则非法: {e}")
+            return ToolResult(is_error=True, content=f"正则非法: {e}")
 
         root = Path(data.get("path") or ".")
         glob_pat = data.get("glob") or "*"
@@ -92,11 +94,11 @@ class GrepTool:
                 if truncated:
                     break
         except OSError as e:
-            return Result(is_error=True, content=f"搜索失败: {e}")
+            return ToolResult(is_error=True, content=f"搜索失败: {e}")
 
         if not hits:
-            return Result(content="无命中")
+            return ToolResult(content="无命中")
         text = "\n".join(hits)
         if truncated:
             text += "\n[truncated]"
-        return Result(content=text)
+        return ToolResult(content=text)

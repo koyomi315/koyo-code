@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from koyocode.llm import ToolCall
+from koyocode.llm import ToolUseBlock
 from koyocode.permission import Category, Decision, Mode, parse_mode
 from koyocode.permission.blacklist import hits_blacklist
 from koyocode.permission.rule import RuleSet
@@ -51,13 +51,13 @@ class Engine:
         """启动默认模式（取自配置，皆无→``Mode.DEFAULT``）。"""
         return self._start_mode
 
-    def persist_local_allow(self, call: ToolCall) -> None:
+    def persist_local_allow(self, call: ToolUseBlock) -> None:
         """永久放行：精确 allow 规则写入本地层文件并同步内存（异常向上抛，agent 侧记日志）。"""
         from koyocode.permission.persist import persist_local_allow as _do
 
         _do(self, call)
 
-    def check(self, mode: Mode, call: ToolCall, read_only: bool) -> tuple[Decision, str]:
+    def check(self, mode: Mode, call: ToolUseBlock, read_only: bool) -> tuple[Decision, str]:
         """前四层判定（agent 每次执行工具前调用）；返回 ``(裁决, 原因)``。
 
         ``read_only`` 由调用方按批类型给定（等价 ``registry.is_read_only``）。

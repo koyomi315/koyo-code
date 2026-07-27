@@ -29,10 +29,10 @@ from koyocode.agent import (
     Phase,
 )
 from koyocode.conversation import Conversation
-from koyocode.llm import StreamEvent, ToolCall
+from koyocode.llm import StreamEvent, ToolUseBlock
 from koyocode.llm import Usage as LLMUsage
 from koyocode.permission import Outcome, new_engine
-from koyocode.tool import Registry, Result, new_default_registry
+from koyocode.tool import Registry, ToolResult, new_default_registry
 
 _READ_TARGET = Path(__file__).resolve().parent.parent / "pyproject.toml"
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -76,8 +76,8 @@ class FakeProvider:
             yield ev
 
 
-def _read_call(call_id: str) -> ToolCall:
-    return ToolCall(id=call_id, name="read_file", input=json.dumps({"path": str(_READ_TARGET)}))
+def _read_call(call_id: str) -> ToolUseBlock:
+    return ToolUseBlock(id=call_id, name="read_file", input=json.dumps({"path": str(_READ_TARGET)}))
 
 
 async def _collect(
@@ -118,7 +118,7 @@ async def test_multi_turn_chain_ac1() -> None:
         scripts=[
             [
                 StreamEvent(text="我先读取该文件"),
-                StreamEvent(tool_calls=[_read_call("c1")]),
+                StreamEvent(tool_uses=[_read_call("c1")]),
                 StreamEvent(usage=LLMUsage(input_tokens=10, output_tokens=5)),
                 StreamEvent(done=True),
             ],
@@ -156,7 +156,7 @@ async def test_multi_turn_chain_ac1() -> None:
     msgs = conv.messages()
     assert [m.role for m in msgs] == ["user", "assistant", "tool", "assistant"]
     assert msgs[1].content == "我先读取该文件"
-    assert msgs[1].tool_calls[0].name == "read_file"
+    assert msgs[1].tool_uses[0].name == "read_file"
     assert msgs[2].role == "tool"
     assert msgs[2].tool_results[0].tool_call_id == "c1"
     assert msgs[3].content == "已读取并给出总结"
@@ -202,14 +202,14 @@ class EchoTool:
     def read_only(self) -> bool:
         return True
 
-    async def execute(self, args: str) -> Result:
-        return Result(content="ok")
+    async def execute(self, args: str) -> ToolResult:
+        return ToolResult(content="ok")
 
 
 @pytest.mark.asyncio
 async def test_iteration_cap_stops_at_max_ac3() -> None:
-    call = ToolCall(id="c1", name="echo", input="{}")
-    provider = FakeProvider(scripts=[[StreamEvent(tool_calls=[call]), StreamEvent(done=True)]])
+    call = ToolUseBlock(id="c1", name="echo", input="{}")
+    provider = FakeProvider(scripts=[[StreamEvent(tool_uses=[call]), StreamEvent(done=True)]])
     reg = Registry()
     reg.register(EchoTool())
     agent = Agent(provider, reg, "test", _engine())
@@ -230,8 +230,8 @@ async def test_iteration_cap_stops_at_max_ac3() -> None:
 
 @pytest.mark.asyncio
 async def test_consecutive_unknown_tools_stops_ac4() -> None:
-    call = ToolCall(id="c", name="ghost", input="{}")
-    provider = FakeProvider(scripts=[[StreamEvent(tool_calls=[call]), StreamEvent(done=True)]])
+    call = ToolUseBlock(id="c", name="ghost", input="{}")
+    provider = FakeProvider(scripts=[[StreamEvent(tool_uses=[call]), StreamEvent(done=True)]])
     reg = Registry()  # 空注册中心：ghost 永远未知
     agent = Agent(provider, reg, "test", _engine())
 
@@ -248,18 +248,18 @@ async def test_consecutive_unknown_tools_stops_ac4() -> None:
 
 @pytest.mark.asyncio
 async def test_unknown_run_resets_when_known_tool_appears() -> None:
-    def ghost(cid: str) -> ToolCall:
-        return ToolCall(id=cid, name="ghost", input="{}")
+    def ghost(cid: str) -> ToolUseBlock:
+        return ToolUseBlock(id=cid, name="ghost", input="{}")
 
-    def echo(cid: str) -> ToolCall:
-        return ToolCall(id=cid, name="echo", input="{}")
+    def echo(cid: str) -> ToolUseBlock:
+        return ToolUseBlock(id=cid, name="echo", input="{}")
 
     scripts = [
-        [StreamEvent(tool_calls=[ghost("c1")]), StreamEvent(done=True)],
-        [StreamEvent(tool_calls=[ghost("c2")]), StreamEvent(done=True)],
-        [StreamEvent(tool_calls=[echo("c3")]), StreamEvent(done=True)],  # 已知工具，计数重置
-        [StreamEvent(tool_calls=[ghost("c4")]), StreamEvent(done=True)],
-        [StreamEvent(tool_calls=[ghost("c5")]), StreamEvent(done=True)],
+        [StreamEvent(tool_uses=[ghost("c1")]), StreamEvent(done=True)],
+        [StreamEvent(tool_uses=[ghost("c2")]), StreamEvent(done=True)],
+        [StreamEvent(tool_uses=[echo("c3")]), StreamEvent(done=True)],  # 已知工具，计数重置
+        [StreamEvent(tool_uses=[ghost("c4")]), StreamEvent(done=True)],
+        [StreamEvent(tool_uses=[ghost("c5")]), StreamEvent(done=True)],
         [StreamEvent(text="完成"), StreamEvent(done=True)],
     ]
     provider = FakeProvider(scripts=scripts)
@@ -314,12 +314,12 @@ class _ROStubTool:
     def read_only(self) -> bool:
         return True
 
-    async def execute(self, args: str) -> Result:
+    async def execute(self, args: str) -> ToolResult:
         label = json.loads(args)["label"]
         self._tracker.start(label)
         await asyncio.sleep(0.05)
         self._tracker.end(label)
-        return Result(content=f"{label}-done")
+        return ToolResult(content=f"{label}-done")
 
 
 class _RWStubTool:
@@ -338,12 +338,12 @@ class _RWStubTool:
     def read_only(self) -> bool:
         return False
 
-    async def execute(self, args: str) -> Result:
+    async def execute(self, args: str) -> ToolResult:
         label = json.loads(args)["label"]
         self._tracker.start(label)
         await asyncio.sleep(0.01)
         self._tracker.end(label)
-        return Result(content=f"{label}-done")
+        return ToolResult(content=f"{label}-done")
 
 
 @pytest.mark.asyncio
@@ -353,13 +353,13 @@ async def test_ordered_batched_concurrency_ac8() -> None:
     reg.register(_ROStubTool(tracker))
     reg.register(_RWStubTool(tracker))
 
-    ro1 = ToolCall(id="ro1", name="stub_ro", input=json.dumps({"label": "ro1"}))
-    ro2 = ToolCall(id="ro2", name="stub_ro", input=json.dumps({"label": "ro2"}))
-    rw1 = ToolCall(id="rw1", name="stub_rw", input=json.dumps({"label": "rw1"}))
+    ro1 = ToolUseBlock(id="ro1", name="stub_ro", input=json.dumps({"label": "ro1"}))
+    ro2 = ToolUseBlock(id="ro2", name="stub_ro", input=json.dumps({"label": "ro2"}))
+    rw1 = ToolUseBlock(id="rw1", name="stub_rw", input=json.dumps({"label": "rw1"}))
 
     provider = FakeProvider(
         scripts=[
-            [StreamEvent(tool_calls=[ro1, ro2, rw1]), StreamEvent(done=True)],
+            [StreamEvent(tool_uses=[ro1, ro2, rw1]), StreamEvent(done=True)],
             [StreamEvent(text="完成"), StreamEvent(done=True)],
         ]
     )
@@ -404,17 +404,17 @@ class _SleepyTool:
     def read_only(self) -> bool:
         return False
 
-    async def execute(self, args: str) -> Result:
+    async def execute(self, args: str) -> ToolResult:
         await asyncio.sleep(self._delay)
-        return Result(content="finished")
+        return ToolResult(content="finished")
 
 
 @pytest.mark.asyncio
 async def test_cancellation_keeps_history_consistent_ac9() -> None:
     reg = Registry()
     reg.register(_SleepyTool(delay=0.2))
-    call = ToolCall(id="c1", name="sleepy", input="{}")
-    provider = FakeProvider(scripts=[[StreamEvent(tool_calls=[call]), StreamEvent(done=True)]])
+    call = ToolUseBlock(id="c1", name="sleepy", input="{}")
+    provider = FakeProvider(scripts=[[StreamEvent(tool_uses=[call]), StreamEvent(done=True)]])
     agent = Agent(provider, reg, "test", _engine())
 
     conv = Conversation()
@@ -477,11 +477,11 @@ async def test_plan_mode_uses_read_only_tools_and_reminder_ac13() -> None:
 async def test_plan_reminder_interval_full_then_concise_ac9() -> None:
     """规划模式按轮次注入：iter1 完整、iter5 完整（间隔 4）、iter2/3/4 精简（F7/AC9）。"""
 
-    def ro(cid: str) -> ToolCall:
-        return ToolCall(id=cid, name="read_file", input=json.dumps({"path": str(_READ_TARGET)}))
+    def ro(cid: str) -> ToolUseBlock:
+        return ToolUseBlock(id=cid, name="read_file", input=json.dumps({"path": str(_READ_TARGET)}))
 
     # 前 4 轮各返一次只读调用，第 5 轮给出最终计划文本
-    scripts = [[StreamEvent(tool_calls=[ro(f"c{i}")]), StreamEvent(done=True)] for i in range(4)]
+    scripts = [[StreamEvent(tool_uses=[ro(f"c{i}")]), StreamEvent(done=True)] for i in range(4)]
     scripts.append([StreamEvent(text="done"), StreamEvent(done=True)])
     provider = FakeProvider(scripts=scripts)
     reg = new_default_registry()
@@ -551,10 +551,10 @@ async def test_stable_prompt_same_across_modes_ac5() -> None:
 @pytest.mark.asyncio
 async def test_reminder_not_persisted_in_history_ac8() -> None:
     """reminder 不写入 conv 持久历史（F6/N3）。"""
-    call = ToolCall(id="c1", name="read_file", input=json.dumps({"path": str(_READ_TARGET)}))
+    call = ToolUseBlock(id="c1", name="read_file", input=json.dumps({"path": str(_READ_TARGET)}))
     provider = FakeProvider(
         scripts=[
-            [StreamEvent(tool_calls=[call]), StreamEvent(done=True)],
+            [StreamEvent(tool_uses=[call]), StreamEvent(done=True)],
             [StreamEvent(text="done"), StreamEvent(done=True)],
         ]
     )
@@ -604,12 +604,12 @@ async def test_cache_usage_passthrough_ac6() -> None:
 # ───────── 场景 G：权限系统集成（Deny/Ask/保序/并发/永久/取消，T9）─────────
 
 
-def _write_call(path: str, cid: str = "w") -> ToolCall:
-    return ToolCall(id=cid, name="write_file", input=json.dumps({"path": path, "content": "x"}))
+def _write_call(path: str, cid: str = "w") -> ToolUseBlock:
+    return ToolUseBlock(id=cid, name="write_file", input=json.dumps({"path": path, "content": "x"}))
 
 
-def _read_call_at(path: str, cid: str = "r") -> ToolCall:
-    return ToolCall(id=cid, name="read_file", input=json.dumps({"path": path}))
+def _read_call_at(path: str, cid: str = "r") -> ToolUseBlock:
+    return ToolUseBlock(id=cid, name="read_file", input=json.dumps({"path": path}))
 
 
 @pytest.mark.asyncio
@@ -618,7 +618,7 @@ async def test_deny_does_not_break_loop(tmp_path: Path) -> None:
     outside = str(tmp_path.parent / "koyo_outside_target.py")
     provider = FakeProvider(
         scripts=[
-            [StreamEvent(tool_calls=[_read_call_at(outside, "c1")]), StreamEvent(done=True)],
+            [StreamEvent(tool_uses=[_read_call_at(outside, "c1")]), StreamEvent(done=True)],
             [StreamEvent(text="完成"), StreamEvent(done=True)],
         ]
     )
@@ -644,7 +644,7 @@ async def test_ordered_reflow_with_deny(tmp_path: Path) -> None:
     provider = FakeProvider(
         scripts=[
             [
-                StreamEvent(tool_calls=[_read_call_at(outside, "c1"), _read_call_at(inner, "c2")]),
+                StreamEvent(tool_uses=[_read_call_at(outside, "c1"), _read_call_at(inner, "c2")]),
                 StreamEvent(done=True),
             ],
             [StreamEvent(text="ok"), StreamEvent(done=True)],
@@ -668,7 +668,7 @@ async def test_ask_approval_allow_once(tmp_path: Path) -> None:
     target = str(tmp_path / "out.txt")
     provider = FakeProvider(
         scripts=[
-            [StreamEvent(tool_calls=[_write_call(target, "c1")]), StreamEvent(done=True)],
+            [StreamEvent(tool_uses=[_write_call(target, "c1")]), StreamEvent(done=True)],
             [StreamEvent(text="写好了"), StreamEvent(done=True)],
         ]
     )
@@ -693,7 +693,7 @@ async def test_ask_approval_deny_once(tmp_path: Path) -> None:
     target = str(tmp_path / "out2.txt")
     provider = FakeProvider(
         scripts=[
-            [StreamEvent(tool_calls=[_write_call(target, "c1")]), StreamEvent(done=True)],
+            [StreamEvent(tool_uses=[_write_call(target, "c1")]), StreamEvent(done=True)],
             [StreamEvent(text="了解，跳过"), StreamEvent(done=True)],
         ]
     )
@@ -716,7 +716,7 @@ async def test_approval_allow_forever_writes_local(tmp_path: Path) -> None:
     target = str(tmp_path / "out3.txt")
     provider = FakeProvider(
         scripts=[
-            [StreamEvent(tool_calls=[_write_call(target, "c1")]), StreamEvent(done=True)],
+            [StreamEvent(tool_uses=[_write_call(target, "c1")]), StreamEvent(done=True)],
             [StreamEvent(text="done"), StreamEvent(done=True)],
         ]
     )
@@ -743,7 +743,7 @@ async def test_read_only_batch_no_approval(tmp_path: Path) -> None:
     provider = FakeProvider(
         scripts=[
             [
-                StreamEvent(tool_calls=[_read_call_at(outside, "c1"), _read_call_at(inner, "c2")]),
+                StreamEvent(tool_uses=[_read_call_at(outside, "c1"), _read_call_at(inner, "c2")]),
                 StreamEvent(done=True),
             ],
             [StreamEvent(text="ok"), StreamEvent(done=True)],
@@ -767,7 +767,7 @@ async def test_cancel_during_approval(tmp_path: Path) -> None:
     """ApprovalRequest 等待中取消：Loop 干净收尾、无挂起 task（N4）。"""
     target = str(tmp_path / "cancel.txt")
     provider = FakeProvider(
-        scripts=[[StreamEvent(tool_calls=[_write_call(target, "c1")]), StreamEvent(done=True)]]
+        scripts=[[StreamEvent(tool_uses=[_write_call(target, "c1")]), StreamEvent(done=True)]]
     )
     reg = new_default_registry()
     engine, _ = new_engine(str(tmp_path))

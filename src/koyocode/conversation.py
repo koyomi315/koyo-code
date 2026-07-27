@@ -4,7 +4,14 @@
 本章扩展：支持 assistant 工具调用回合与 ``ROLE_TOOL`` 结果回合的追加（F6）。
 """
 
-from koyocode.llm import ROLE_ASSISTANT, ROLE_TOOL, ROLE_USER, Message, ToolCall, ToolResult
+from koyocode.llm import (
+    ROLE_ASSISTANT,
+    ROLE_TOOL,
+    ROLE_USER,
+    Message,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 
 
 class Conversation:
@@ -21,11 +28,11 @@ class Conversation:
         """追加一条助手消息。"""
         self._messages.append(Message(role=ROLE_ASSISTANT, content=text))
 
-    def add_assistant_with_tool_calls(self, text: str, calls: list[ToolCall]) -> None:
+    def add_assistant_with_tool_uses(self, text: str, calls: list[ToolUseBlock]) -> None:
         """追加 assistant 工具调用回合：正文 preamble + 模型请求执行的工具调用。"""
-        self._messages.append(Message(role=ROLE_ASSISTANT, content=text, tool_calls=list(calls)))
+        self._messages.append(Message(role=ROLE_ASSISTANT, content=text, tool_uses=list(calls)))
 
-    def add_tool_results(self, results: list[ToolResult]) -> None:
+    def add_tool_results(self, results: list[ToolResultBlock]) -> None:
         """追加 ``ROLE_TOOL`` 结果回合：对应各工具调用的执行结果。"""
         self._messages.append(Message(role=ROLE_TOOL, tool_results=list(results)))
 
