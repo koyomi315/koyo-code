@@ -163,7 +163,7 @@
 - close 兜底：注入一个 close 阻塞的 fake context manager（`__aexit__` 内 `await asyncio.Event().wait()`），把 `close_timeout` 改 0.2，断言 `close()` 在 0.2s 内返回；
 - 并发安全：`pytest --asyncio-mode=auto` 默认就跑在单线程 event loop；额外检查 `_tools` 顺序由 `sort` 决定而非 task 完成顺序。
 
-## T5: cli 接线**文件：** `src/koyocode/cli.py`
+## T5: [x] cli 接线**文件：** `src/koyocode/cli.py`
 **依赖：** T2、T3、T4
 **步骤：**
 1. import `asyncio`、`koyocode.mcp as mcp_client`。
