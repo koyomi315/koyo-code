@@ -291,3 +291,23 @@ def test_load_config_never_raises(tmp_path: Path, monkeypatch) -> None:
     _patch_home(monkeypatch, tmp_path / "home")
     cfg = load_config(str(tmp_path / "nonexistent-project"))
     assert cfg.servers == {}
+
+
+def test_example_yaml_parses(tmp_path: Path, monkeypatch) -> None:
+    """读取 docs/ch07/mcp-servers.example.yaml，断言三个 server 都解析成功。"""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_xxx")
+    monkeypatch.setenv("EXAMPLE_TOKEN", "tok")
+    _patch_home(monkeypatch, tmp_path / "home")  # 隔离用户级
+
+    example = Path(__file__).parent.parent / "docs" / "ch07" / "mcp-servers.example.yaml"
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".koyocode.yaml").write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+
+    cfg = load_config(str(project))
+    assert set(cfg.servers) == {"github", "local-sqlite", "example-http"}
+    assert cfg.servers["github"].type == "stdio"
+    assert cfg.servers["github"].env["GITHUB_TOKEN"] == "ghp_xxx"
+    assert cfg.servers["local-sqlite"].command == "python"
+    assert cfg.servers["example-http"].type == "http"
+    assert cfg.servers["example-http"].headers["Authorization"] == "Bearer tok"

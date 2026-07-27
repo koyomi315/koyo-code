@@ -50,5 +50,7 @@ venv/
 Thumbs.db
 desktop.ini
 
-# 学习文档（暂不提交）
-docs/
+# 学习文档（暂不提交）；docs/ch07/ 例外（MCP 配置示例需入库）
+docs/*
+!docs/ch07/
+!docs/ch07/mcp-servers.example.yaml

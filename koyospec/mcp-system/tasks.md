@@ -184,7 +184,7 @@
 
 **验证：** `python -m koyocode` 无 MCP 配置时进 TUI、内置 6 工具可用；配一个 command 不存在的 stdio server 时进 TUI 不阻塞、stderr 显示连接失败告警。
 
-## T6: 配置示例**文件：** `docs/ch07/mcp-servers.example.yaml`
+## T6: [x] 配置示例**文件：** `docs/ch07/mcp-servers.example.yaml`
 **依赖：** 无（可与 T2 并行）
 **步骤：**
 1. 内容（用 YAML 注释说明放置位置与覆盖语义）：
