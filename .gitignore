@@ -42,6 +42,9 @@ venv/
 # Claude Code 本地 skills（个人工作流脚本，不入库）
 .claude/skills/
 
+# 本地 agent skills（个人工作流脚本，不入库）
+.agents/
+
 # 操作系统
 .DS_Store
 Thumbs.db
