@@ -112,7 +112,7 @@
   - 阻塞至超时（stub `await asyncio.Event().wait()` + 模块级 timeout `monkeypatch` 改 200ms）→ `is_error=True`，content 含 `超时`；
   - 非 text 块跳过 + `texts` 仅含 text + `_non_text_warn_once` 同 `full_name` 多次调用只告警一次。
 
-## T4: 连接管理器（Manager）**文件：** `src/koyocode/mcp/manager.py`、`src/koyocode/mcp/__init__.py`（追加导出）、`tests/test_mcp_manager.py`
+## T4: [x] 连接管理器（Manager）**文件：** `src/koyocode/mcp/manager.py`、`src/koyocode/mcp/__init__.py`（追加导出）、`tests/test_mcp_manager.py`
 **依赖：** T2、T3
 **步骤：**
 1. 模块级变量（非常量，便于单测改）：
