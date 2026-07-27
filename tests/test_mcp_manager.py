@@ -23,6 +23,14 @@ def _mktool(full_name: str) -> McpTool:
     )
 
 
+async def _stub_ok(mgr, name, srv, version, done, tool=None) -> None:
+    """stub：成功注册 tool + 持守到 close。"""
+    if tool is not None:
+        await _register_tools(mgr, name, None, [tool])  # type: ignore[arg-type]
+    done.set()
+    await mgr._close_event.wait()
+
+
 # --- 空配置 ---
 
 
@@ -41,14 +49,15 @@ async def test_empty_config() -> None:
 @pytest.mark.asyncio
 async def test_failed_server_isolated(monkeypatch, capsys) -> None:
     stub_tool = _mktool("mcp__stub__echo")
+    real_connect = manager_mod._connect_one
 
-    async def routed_do_connect(mgr, name, srv, version):
-        if name == "bad":
-            raise RuntimeError("connection refused")  # 模拟连接失败
-        # stub 成功：直接注册
-        await _register_tools(mgr, name, None, [stub_tool])  # type: ignore[arg-type]
+    async def routed(mgr, name, srv, version, done):
+        if name == "stub":
+            await _stub_ok(mgr, name, srv, version, done, tool=stub_tool)
+        else:
+            await real_connect(mgr, name, srv, version, done)
 
-    monkeypatch.setattr(manager_mod, "_do_connect", routed_do_connect)
+    monkeypatch.setattr(manager_mod, "_connect_one", routed)
 
     cfg = Config(
         servers={
@@ -72,10 +81,10 @@ async def test_failed_server_isolated(monkeypatch, capsys) -> None:
 async def test_connect_timeout(monkeypatch, capsys) -> None:
     monkeypatch.setattr(manager_mod, "connect_timeout", 0.2)
 
-    async def hanging_connect(mgr, name, srv, version):
-        await asyncio.Event().wait()  # 永远阻塞
+    async def hanging(mgr, name, srv, version, done):
+        await mgr._close_event.wait()  # 不 set done，模拟握手卡住
 
-    monkeypatch.setattr(manager_mod, "_do_connect", hanging_connect)
+    monkeypatch.setattr(manager_mod, "_connect_one", hanging)
 
     cfg = Config(servers={"srv": ServerConfig(type="stdio", command="x")})
     start = time.monotonic()
@@ -95,18 +104,15 @@ async def test_connect_timeout(monkeypatch, capsys) -> None:
 async def test_close_timeout(monkeypatch) -> None:
     monkeypatch.setattr(manager_mod, "close_timeout", 0.2)
 
-    cfg = Config()
+    async def close_hang(mgr, name, srv, version, done):
+        done.set()
+        await mgr._close_event.wait()
+        await asyncio.Event().wait()  # close 通知后仍卡住（模拟 __aexit__ 阻塞）
+
+    monkeypatch.setattr(manager_mod, "_connect_one", close_hang)
+
+    cfg = Config(servers={"srv": ServerConfig(type="stdio", command="x")})
     mgr = await new_manager(cfg, "0.0.0-test")
-
-    class HangingCM:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            await asyncio.Event().wait()  # 永远阻塞
-
-    await mgr._stack.enter_async_context(HangingCM())
-
     start = time.monotonic()
     await mgr.close()
     elapsed = time.monotonic() - start
@@ -124,13 +130,15 @@ async def test_tools_sorted_by_name(monkeypatch) -> None:
         "mid": "mcp__mid__t",
     }
 
-    async def stub_connect(mgr, name, srv, version):
+    async def stub(mgr, name, srv, version, done):
         # alpha 故意后完成，验证结果仍按 full_name 排序而非完成顺序
         if name == "alpha":
             await asyncio.sleep(0.05)
         await _register_tools(mgr, name, None, [_mktool(names_to_full[name])])  # type: ignore[arg-type]
+        done.set()
+        await mgr._close_event.wait()
 
-    monkeypatch.setattr(manager_mod, "_do_connect", stub_connect)
+    monkeypatch.setattr(manager_mod, "_connect_one", stub)
 
     cfg = Config(
         servers={
@@ -151,7 +159,6 @@ async def test_tools_sorted_by_name(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_register_tools_dedup(capsys) -> None:
     mgr = Manager()
-    await mgr._stack.__aenter__()
     tool_a = _mktool("mcp__shared__t")
     tool_b = _mktool("mcp__shared__t")  # 同名（防御性场景）
     await _register_tools(mgr, "a", None, [tool_a])  # type: ignore[arg-type]
@@ -159,4 +166,3 @@ async def test_register_tools_dedup(capsys) -> None:
     assert len(mgr.tools()) == 1
     err = capsys.readouterr().err
     assert "skip duplicate tool mcp__shared__t" in err
-    await mgr.close()
