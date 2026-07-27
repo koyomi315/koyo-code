@@ -67,7 +67,7 @@
 - `${VAR}` 已定义（用 `monkeypatch.setenv`）→ 展开为环境值；未定义 → 空串 + 告警；`command` / `args` 中含 `${VAR}` → 不展开（保留字面量）；
 - type 缺失 / type 非法 / stdio 缺 command / http 缺 url → 该 server 被跳过，其它 server 不受影响。
 
-## T3: 工具适配（McpTool）**文件：** `src/koyocode/mcp/tool.py`、`tests/test_mcp_tool.py`
+## T3: [x] 工具适配（McpTool）**文件：** `src/koyocode/mcp/tool.py`、`tests/test_mcp_tool.py`
 **依赖：** T1
 **步骤：**
 1. `import mcp.types as mtypes`；`from koyocode.tool import Tool, ToolResult`（或对应内置工具协议路径，按现有命名为准）。
