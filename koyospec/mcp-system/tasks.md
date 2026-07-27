@@ -31,7 +31,7 @@
 
 **验证：** `python -c "import mcp; print(mcp.__version__ if hasattr(mcp,'__version__') else 'ok')"` 输出非错误；`uv pip list | grep mcp` 看到包名。
 
-## T2: 配置类型与加载（含两层合并 + 变量展开 + 字段校验）**文件：** `src/koyocode/mcp/config.py`、`src/koyocode/mcp/__init__.py`、`tests/test_mcp_config.py`
+## T2: [x] 配置类型与加载（含两层合并 + 变量展开 + 字段校验）**文件：** `src/koyocode/mcp/config.py`、`src/koyocode/mcp/__init__.py`、`tests/test_mcp_config.py`
 **依赖：** T1
 **步骤：**
 1. 定义对外类型 `ServerConfig`、`Config`（见 plan.md「核心数据结构」），用 `@dataclass`。
