@@ -34,7 +34,7 @@
 
 ---
 
-## T2: app 适配 banner 返回 `rich.Text` + 新增 `_append_history_rich`
+## T2: app 适配 banner 返回 `rich.Text` + 新增 `_append_history_rich` ✅
 
 **文件：** `src/koyocode/tui/app.py`
 **依赖：** T1

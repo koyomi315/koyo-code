@@ -200,7 +200,7 @@ class KoyoCodeApp(App):
         yield Static(id="statusbar", markup=False)
 
     def on_mount(self) -> None:
-        self._append_history_text(render_banner(__version__, os.getcwd()), "banner-text")
+        self._append_history_rich(render_banner(__version__, os.getcwd()), "banner-text")
         # TextArea 无原生 placeholder，用输入框边框副标题承载占位提示（AC7）。
         self.query_one(
             "#input-wrap"
@@ -261,6 +261,13 @@ class KoyoCodeApp(App):
 
     def _append_history_text(self, text: str, classes: str = "") -> Static:
         """追加可选文本到历史区，使用 Textual 原生 Content 参与选区。"""
+        class_names = " ".join(part for part in ("history-message", classes) if part)
+        widget = Static(text, classes=class_names, markup=False)
+        self._append_history_widget(widget)
+        return widget
+
+    def _append_history_rich(self, text: Text, classes: str = "") -> Static:
+        """追加富文本（rich.Text，带着色 span）到历史区，供 logo 等富文本使用。"""
         class_names = " ".join(part for part in ("history-message", classes) if part)
         widget = Static(text, classes=class_names, markup=False)
         self._append_history_widget(widget)
