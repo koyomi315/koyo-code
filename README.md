@@ -1,5 +1,9 @@
 # KoyoCode
 
+<p align="center">
+  <img src="docs/assets/koyocode-logo-blue.png" alt="KoyoCode Logo" width="220">
+</p>
+
 > 一个 Claude Code 风格的终端 AI 编程助手，用 Python 从零构建。
 
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)
