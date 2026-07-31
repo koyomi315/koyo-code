@@ -370,14 +370,14 @@ class KoyoCodeApp(App):
             return
         if stripped == "/do":
             self.query_one("#input", InputArea).clear()
-            self._append_history_text("● /do", "user-message")
+            self._append_history_text("❯ /do", "user-message")
             self.mode = Mode.DEFAULT
             self.conv.add_user(EXECUTE_DIRECTIVE)
             self._update_statusbar()
             self._start_turn()
             return
         self.conv.add_user(text)
-        self._append_history_text(f"● {text}", "user-message")
+        self._append_history_text(f"❯ {text}", "user-message")
         self.query_one("#input", InputArea).clear()
         self._start_turn()
 
