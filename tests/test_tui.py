@@ -77,7 +77,7 @@ def test_history_uses_selectable_native_widgets(monkeypatch):
             selected = banner.get_selection(Selection(None, None))
 
             assert selected is not None
-            assert "koyoCode" in selected[0]
+            assert "KoyoCode" in selected[0]
 
     _run(run())
 
@@ -1009,5 +1009,156 @@ def test_border_subtitle_has_no_shift_tab_hint(monkeypatch):
             subtitle = app.query_one("#input-wrap").border_subtitle
             assert "Shift+Tab" not in subtitle
             assert "Enter 发送" in subtitle
+
+    _run(run())
+
+
+# ───────── ui-polish：用户/助手符号、回合分隔、参数折叠、完成提示 ─────────
+
+
+def test_user_message_uses_arrow_marker(monkeypatch):
+    """用户 query 用 ❯ 前缀，与助手 ● 区分（T3）。"""
+    fake = FakeProvider(events=[StreamEvent(text="hi"), StreamEvent(done=True)])
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = app.query_one("#input", appmod.InputArea)
+            inp.text = "my query"
+            await pilot.pause()
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if app.state == SessionState.IDLE:
+                    break
+            await pilot.pause()
+
+            history = app.query_one("#history", VerticalScroll)
+            texts = [str(w.content) for w in history.query(Static)]
+            # 用户行以 ❯ 开头（含 "❯ my query"）
+            assert any(t.lstrip().startswith("❯") for t in texts), texts
+            # 助手圆点仍为 ●（assistant-marker）
+            markers = history.query(".assistant-marker")
+            assert len(markers) > 0
+
+    _run(run())
+
+
+def test_turn_separator_between_rounds(monkeypatch):
+    """连续两轮对话间出现 turn-separator 分隔（T4）。"""
+    fake = FakeProvider(
+        events=[StreamEvent(text="first"), StreamEvent(done=True)]
+    )
+    # 让每次提交都返回同一组事件
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # 第一轮
+            inp = app.query_one("#input", appmod.InputArea)
+            inp.text = "round1"
+            await pilot.pause()
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if app.state == SessionState.IDLE:
+                    break
+            assert app._turn_count == 1
+            # 第二轮
+            inp.text = "round2"
+            await pilot.pause()
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if app.state == SessionState.IDLE:
+                    break
+            assert app._turn_count == 2
+            # 历史区出现 turn-separator
+            history = app.query_one("#history", VerticalScroll)
+            separators = history.query(".turn-separator")
+            assert len(separators) == 1  # 第二轮前一道分隔
+
+    _run(run())
+
+
+def test_fold_args_truncates_long(monkeypatch):
+    """_fold_args 超 60 字符截断加 …，短的不变（T7）。"""
+    assert appmod._fold_args("x" * 100).endswith("…")
+    assert len(appmod._fold_args("x" * 100)) == 61
+    assert appmod._fold_args("short") == "short"
+    assert appmod._fold_args("y" * 60) == "y" * 60  # 边界：等于不截断
+
+
+def test_finish_turn_flashes_done_in_statusbar(monkeypatch):
+    """一轮正常完成后状态栏闪现「✓ 完成」（T8）。"""
+    fake = FakeProvider(events=[StreamEvent(text="done"), StreamEvent(done=True)])
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = app.query_one("#input", appmod.InputArea)
+            inp.text = "go"
+            await pilot.pause()
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if app.state == SessionState.IDLE:
+                    break
+            # 完成态已设置
+            assert app._done_feedback_until is not None
+            sb = app.query_one("#statusbar", Static)
+            assert "✓ 完成" in str(sb.content)
+
+    _run(run())
+
+
+def test_error_does_not_flash_done(monkeypatch):
+    """错误完成不触发完成提示（T8）。"""
+    fake = FakeProvider(events=[StreamEvent(err=RuntimeError("boom"))])
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = app.query_one("#input", appmod.InputArea)
+            inp.text = "go"
+            await pilot.pause()
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if app.state == SessionState.IDLE:
+                    break
+            assert app._done_feedback_until is None  # 错误不闪现
+            sb = app.query_one("#statusbar", Static)
+            assert "✓ 完成" not in str(sb.content)
+
+    _run(run())
+
+
+def test_streaming_uses_spinner_no_imagining(monkeypatch):
+    """流式动态区用 spinner，无 Imagining/Running 文字（T6）。"""
+    fake = FakeProvider(events=[StreamEvent(done=True)])
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.cur_reply = ""
+            app.turn_start = 0.0
+            app.state = SessionState.STREAMING
+            app._render_streaming()
+            view = str(app.query_one("#streaming", Static).content)
+            assert "Imagining" not in view
+            assert "Running" not in view
+            # 含 spinner 字符之一
+            assert any(ch in view for ch in appmod._SPINNER_FRAMES)
 
     _run(run())
