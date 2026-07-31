@@ -290,7 +290,8 @@ class KoyoCodeApp(App):
         return self.query_one("#history", VerticalScroll)
 
     def _scroll_history_end(self, history: VerticalScroll) -> None:
-        history.scroll_end(animate=False, immediate=True, x_axis=False)
+        """直接将滚动位置设到底部（比 scroll_end 可靠，后者常停在旧 max）。"""
+        history.scroll_y = history.max_scroll_y
 
     def _scroll_history_end_deferred(self, history: VerticalScroll) -> None:
         """二层滚动：首层刷新后再调度一次，给 Markdown 异步展开留时间。"""
@@ -575,6 +576,9 @@ class KoyoCodeApp(App):
         if self.state == SessionState.STREAMING:
             self._spinner_frame = (self._spinner_frame + 1) % len(_SPINNER_FRAMES)
             self._render_streaming()
+            # 流式期间持续跟随到底部：内容增长时不断把滚动推到底，
+            # 覆盖用户消息/工具结果挂载与 Markdown 异步展开导致的滚动滞后。
+            self._scroll_history_end(self._history())
 
     def _render_streaming(self) -> None:
         spinner = _SPINNER_FRAMES[self._spinner_frame]
@@ -596,12 +600,20 @@ class KoyoCodeApp(App):
         elapsed = int(time.monotonic() - self.turn_start)
         if reply:
             self._append_assistant_message(reply, elapsed)
-        # 最终回复（Markdown）展开后二次确认滚动到底，保证最新内容完整可见。
-        self.call_after_refresh(self._scroll_history_end, self._history())
+        # 最终回复（Markdown）异步展开，需在多个刷新周期持续滚到底，
+        # 确保展开后最新内容完整可见（单次 call_after_refresh 时机过早）。
+        self._scroll_after_finish(remaining=6)
         self._flash_done(elapsed)
         self._cleanup_streaming()
         self.state = SessionState.IDLE
         self.query_one("#input", InputArea).focus()
+
+    def _scroll_after_finish(self, remaining: int) -> None:
+        """完成后分多个刷新周期滚到底，覆盖 Markdown 异步展开的时间窗口。"""
+        history = self._history()
+        self._scroll_history_end(history)
+        if remaining > 1:
+            self.call_after_refresh(self._scroll_after_finish, remaining - 1)
 
     def _finish_with_error(self, err: Exception) -> None:
         self._append_history_text(f"● {err}", "error-message")

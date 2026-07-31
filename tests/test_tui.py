@@ -1162,3 +1162,31 @@ def test_streaming_uses_spinner_no_imagining(monkeypatch):
             assert any(ch in view for ch in appmod._SPINNER_FRAMES)
 
     _run(run())
+
+
+def test_history_auto_scrolls_to_bottom_after_turn(monkeypatch):
+    """长回复完成后历史区自动滚到底部（T5，AC2）。"""
+    fake = FakeProvider(
+        events=[StreamEvent(text="# 标题\n\n" + "内容行 " * 60), StreamEvent(done=True)]
+    )
+    monkeypatch.setattr(appmod, "new_provider", lambda cfg: fake)
+
+    async def run():
+        app = KoyoCodeApp([_provider_cfg()], engine=_engine())
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            inp = app.query_one("#input", appmod.InputArea)
+            inp.text = "生成长回复"
+            await pilot.pause()
+            await pilot.press("enter")
+            for _ in range(60):
+                await pilot.pause()
+                if app.state == SessionState.IDLE:
+                    break
+            # 完成后等待 _scroll_after_finish 多帧滚动跑完
+            for _ in range(15):
+                await pilot.pause()
+            history = app.query_one("#history", VerticalScroll)
+            assert history.scroll_y >= history.max_scroll_y  # 滚到底
+
+    _run(run())
