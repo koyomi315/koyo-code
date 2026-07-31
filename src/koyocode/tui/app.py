@@ -255,10 +255,15 @@ class KoyoCodeApp(App):
     def _scroll_history_end(self, history: VerticalScroll) -> None:
         history.scroll_end(animate=False, immediate=True, x_axis=False)
 
+    def _scroll_history_end_deferred(self, history: VerticalScroll) -> None:
+        """二层滚动：首层刷新后再调度一次，给 Markdown 异步展开留时间。"""
+        self._scroll_history_end(history)
+        self.call_after_refresh(self._scroll_history_end, history)
+
     def _append_history_widget(self, widget: Static | Markdown) -> Static | Markdown:
         history = self._history()
         history.mount(widget)
-        self.call_after_refresh(self._scroll_history_end, history)
+        self.call_after_refresh(self._scroll_history_end_deferred, history)
         return widget
 
     def _append_history_text(self, text: str, classes: str = "") -> Static:
@@ -552,6 +557,8 @@ class KoyoCodeApp(App):
         elapsed = int(time.monotonic() - self.turn_start)
         if reply:
             self._append_assistant_message(reply, elapsed)
+        # 最终回复（Markdown）展开后二次确认滚动到底，保证最新内容完整可见。
+        self.call_after_refresh(self._scroll_history_end, self._history())
         self._cleanup_streaming()
         self.state = SessionState.IDLE
         self.query_one("#input", InputArea).focus()
