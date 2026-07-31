@@ -44,6 +44,12 @@ from koyocode.tool import Registry, new_default_registry
 
 _TOOL_RESULT_MAX_LINES = 8
 _COPY_FEEDBACK_TIMEOUT = 2.0
+_FOLD_ARGS_LIMIT = 60
+_DONE_FEEDBACK_TIMEOUT = 2.0
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+# 跟随滚动：流式与完成后持续把历史区滚到底，覆盖 Markdown 异步分批挂载。
+_FOLLOW_SCROLL_INTERVAL = 0.05
+_FOLLOW_SCROLL_LINGER = 1.5  # 完成后继续跟随的时长（秒）
 _SelectionPoint = tuple[int, int] | None
 _SelectionFingerprint = tuple[tuple[int, _SelectionPoint, _SelectionPoint], ...]
 
@@ -60,6 +66,13 @@ def _fmt_tokens(n: int) -> str:
     if n < 1000:
         return str(n)
     return f"{n / 1000:.1f}k"
+
+
+def _fold_args(args: str, limit: int = _FOLD_ARGS_LIMIT) -> str:
+    """工具参数超长折叠：超过 limit 字符截断并加省略号，否则原样。"""
+    if len(args) > limit:
+        return args[:limit] + "…"
+    return args
 
 
 _MODE_VISUAL: dict[Mode, tuple[str, str]] = {
@@ -128,6 +141,7 @@ class KoyoCodeApp(App):
     .assistant-message { padding: 0; margin: 0 0 1 0; }
     .elapsed-line { color: $text-muted; }
     .notice-message { color: $text-muted; }
+    .turn-separator { color: $text-muted; }
     .tool-line { text-style: bold; color: cyan; }
     .tool-result { color: $text-muted; }
     .tool-error { color: $error; text-style: bold; }
@@ -184,6 +198,12 @@ class KoyoCodeApp(App):
         self._timer: Timer | None = None
         self._copy_feedback_timer: Timer | None = None
         self._last_copied_selection: _SelectionFingerprint | None = None
+        self._turn_count: int = 0
+        self._spinner_frame: int = 0
+        self._done_feedback_until: float | None = None
+        self._done_timer: Timer | None = None
+        self._follow_timer: Timer | None = None
+        self._follow_stop_timer: Timer | None = None
 
     # ───────── 组装 ─────────
     def compose(self) -> ComposeResult:
@@ -200,7 +220,7 @@ class KoyoCodeApp(App):
         yield Static(id="statusbar", markup=False)
 
     def on_mount(self) -> None:
-        self._append_history_text(render_banner(__version__, os.getcwd()), "banner-text")
+        self._append_history_rich(render_banner(__version__, os.getcwd()), "banner-text")
         # TextArea 无原生 placeholder，用输入框边框副标题承载占位提示（AC7）。
         self.query_one(
             "#input-wrap"
@@ -236,6 +256,16 @@ class KoyoCodeApp(App):
     def _update_statusbar(self) -> None:
         if self.provider is None:
             return
+        # 完成态：闪现「✓ 完成」绿色，约 _DONE_FEEDBACK_TIMEOUT 后由 timer 恢复。
+        if (
+            self._done_feedback_until is not None
+            and time.monotonic() < self._done_feedback_until
+        ):
+            elapsed = int(time.monotonic() - self.turn_start)
+            self.query_one("#statusbar", Static).update(
+                Text(f"✓ 完成 · {elapsed}s", style="green")
+            )
+            return
         label, color = _MODE_VISUAL[self.mode]
         usage = f"  ↑{_fmt_tokens(self.usage_in)} ↓{_fmt_tokens(self.usage_out)} tok"
         segments: list[tuple[str, str]] = [
@@ -247,20 +277,70 @@ class KoyoCodeApp(App):
         segments.append((f"    {self.provider.model}{usage}", ""))
         self.query_one("#statusbar", Static).update(Text.assemble(*segments))
 
+    def _flash_done(self, elapsed_s: int) -> None:
+        """生成完成：状态栏闪现「✓ 完成」2 秒，timer 兜底恢复常规。"""
+        self._done_feedback_until = time.monotonic() + _DONE_FEEDBACK_TIMEOUT
+        if self._done_timer is not None:
+            self._done_timer.stop()
+        self._done_timer = self.set_timer(_DONE_FEEDBACK_TIMEOUT, self._clear_done)
+        self._update_statusbar()
+
+    def _clear_done(self) -> None:
+        """完成提示到期：清除完成态、恢复常规状态栏。"""
+        self._done_feedback_until = None
+        self._done_timer = None
+        self._update_statusbar()
+
     def _history(self) -> VerticalScroll:
         return self.query_one("#history", VerticalScroll)
 
     def _scroll_history_end(self, history: VerticalScroll) -> None:
-        history.scroll_end(animate=False, immediate=True, x_axis=False)
+        """直接将滚动位置设到底部（比 scroll_end 可靠，后者常停在旧 max）。"""
+        history.scroll_y = history.max_scroll_y
+
+    def _start_follow_scroll(self) -> None:
+        """启动跟随滚动定时器：流式期间持续把历史区滚到底。
+
+        Markdown 回复是异步分批挂载的，单次/固定帧数的 call_after_refresh 无法
+        覆盖其展开时间窗口；改用周期定时器持续跟随，可靠保证内容增长时滚到底。
+        """
+        self._stop_follow_scroll()
+        self._follow_timer = self.set_interval(_FOLLOW_SCROLL_INTERVAL, self._follow_scroll_tick)
+
+    def _follow_scroll_tick(self) -> None:
+        if self._follow_timer is not None:
+            self._scroll_history_end(self._history())
+
+    def _stop_follow_scroll(self) -> None:
+        """停止跟随滚动定时器与完成后的延迟停止定时器。"""
+        if self._follow_timer is not None:
+            self._follow_timer.stop()
+            self._follow_timer = None
+        if self._follow_stop_timer is not None:
+            self._follow_stop_timer.stop()
+            self._follow_stop_timer = None
+
+    def _schedule_follow_scroll_stop(self) -> None:
+        """完成后：继续跟随 _FOLLOW_SCROLL_LINGER 秒再停，覆盖 Markdown 异步展开。"""
+        if self._follow_stop_timer is not None:
+            self._follow_stop_timer.stop()
+        self._follow_stop_timer = self.set_timer(_FOLLOW_SCROLL_LINGER, self._stop_follow_scroll)
 
     def _append_history_widget(self, widget: Static | Markdown) -> Static | Markdown:
         history = self._history()
         history.mount(widget)
-        self.call_after_refresh(self._scroll_history_end, history)
+        self._scroll_history_end(history)
         return widget
 
     def _append_history_text(self, text: str, classes: str = "") -> Static:
         """追加可选文本到历史区，使用 Textual 原生 Content 参与选区。"""
+        class_names = " ".join(part for part in ("history-message", classes) if part)
+        widget = Static(text, classes=class_names, markup=False)
+        self._append_history_widget(widget)
+        return widget
+
+    def _append_history_rich(self, text: Text, classes: str = "") -> Static:
+        """追加富文本（rich.Text，带着色 span）到历史区，供 logo 等富文本使用。"""
         class_names = " ".join(part for part in ("history-message", classes) if part)
         widget = Static(text, classes=class_names, markup=False)
         self._append_history_widget(widget)
@@ -363,19 +443,23 @@ class KoyoCodeApp(App):
             return
         if stripped == "/do":
             self.query_one("#input", InputArea).clear()
-            self._append_history_text("● /do", "user-message")
+            self._append_history_text("❯ /do", "user-message")
             self.mode = Mode.DEFAULT
             self.conv.add_user(EXECUTE_DIRECTIVE)
             self._update_statusbar()
             self._start_turn()
             return
         self.conv.add_user(text)
-        self._append_history_text(f"● {text}", "user-message")
+        self._append_history_text(f"❯ {text}", "user-message")
         self.query_one("#input", InputArea).clear()
         self._start_turn()
 
     def _start_turn(self) -> None:
         """启动一轮 Agent Loop：重置本轮状态、发起 stream task。"""
+        # 非首轮先追加暗淡细线，分隔相邻回合，使每轮「query + 回复」成组。
+        if self._turn_count > 0:
+            self._append_history_text("─" * 40, "turn-separator")
+        self._turn_count += 1
         self.cur_reply = ""
         self.cur_tools = []
         self.iter = 0
@@ -386,6 +470,7 @@ class KoyoCodeApp(App):
         self._render_streaming()
         self._stream_task = asyncio.create_task(self._consume_agent_events())
         self._timer = self.set_interval(0.1, self._tick)
+        self._start_follow_scroll()
 
     async def _consume_agent_events(self) -> None:
         """消费 ``Agent.run`` 事件流，分派文本/工具/用量/轮次/通知/审批/done/err。"""
@@ -511,27 +596,29 @@ class KoyoCodeApp(App):
         """工具结束：写工具行 + 结果摘要到滚动历史，从 Running 队首弹出。"""
         if self.cur_tools:
             self.cur_tools.pop(0)
-        self._append_history_text(f"● {name}({args})", "tool-line")
+        self._append_history_text(f"● {name}({_fold_args(args)})", "tool-line")
         result_class = "tool-error" if is_error else "tool-result"
         self._append_history_text(self._tool_result_text(result), result_class)
         self._render_streaming()
 
     def _tick(self) -> None:
         if self.state == SessionState.STREAMING:
+            self._spinner_frame = (self._spinner_frame + 1) % len(_SPINNER_FRAMES)
             self._render_streaming()
 
     def _render_streaming(self) -> None:
+        spinner = _SPINNER_FRAMES[self._spinner_frame]
         elapsed = int(time.monotonic() - self.turn_start)
         if self.cur_tools:
             view = "\n".join(
-                f"● {t.name}({t.args}) Running... ({elapsed}s)" for t in self.cur_tools
+                f"{spinner} {t.name}({t.args}) · {elapsed}s" for t in self.cur_tools
             )
         else:
             round_hint = f" · 第 {self.iter} 轮" if self.iter > 0 else ""
             if self.cur_reply:
-                view = f"{self.cur_reply}\nImagining... ({elapsed}s{round_hint})"
+                view = f"{self.cur_reply}\n{spinner} {elapsed}s{round_hint}"
             else:
-                view = f"Imagining... ({elapsed}s{round_hint})"
+                view = f"{spinner} {elapsed}s{round_hint}"
         self.query_one("#streaming", Static).update(view)
 
     def _finish_turn(self, reply: str) -> None:
@@ -539,12 +626,17 @@ class KoyoCodeApp(App):
         elapsed = int(time.monotonic() - self.turn_start)
         if reply:
             self._append_assistant_message(reply, elapsed)
+        # 最终回复（Markdown）异步分批挂载，跟随滚动定时器继续运行一段时间再停，
+        # 覆盖展开时间窗口，保证完成后最新内容完整可见、滚到底。
+        self._schedule_follow_scroll_stop()
+        self._flash_done(elapsed)
         self._cleanup_streaming()
         self.state = SessionState.IDLE
         self.query_one("#input", InputArea).focus()
 
     def _finish_with_error(self, err: Exception) -> None:
         self._append_history_text(f"● {err}", "error-message")
+        self._schedule_follow_scroll_stop()
         self._cleanup_streaming()
         self.state = SessionState.IDLE
         self.query_one("#input", InputArea).focus()
@@ -598,6 +690,10 @@ class KoyoCodeApp(App):
         if self._copy_feedback_timer is not None:
             self._copy_feedback_timer.stop()
             self._copy_feedback_timer = None
+        if self._done_timer is not None:
+            self._done_timer.stop()
+            self._done_timer = None
+        self._stop_follow_scroll()
         self.exit()
 
     async def action_quit(self) -> None:

@@ -160,3 +160,47 @@ def test_execute_directive_nonempty() -> None:
     """EXECUTE_DIRECTIVE 为 /do 注入的非空文案。"""
     assert isinstance(EXECUTE_DIRECTIVE, str)
     assert EXECUTE_DIRECTIVE.strip()
+
+
+# ───────── banner 点阵 logo（ui-polish T1）─────────
+def test_render_banner_returns_rich_text() -> None:
+    """render_banner 返回 rich.Text，含像素 span（logo）与头部文本。"""
+    from rich.text import Text
+
+    from koyocode.prompt import render_banner
+
+    t = render_banner("0.1.0", "/tmp")
+    assert isinstance(t, Text)
+    assert len(t.spans) > 0  # 含 logo 着色 span
+
+
+def test_render_banner_has_whale_blue_pixels() -> None:
+    """logo 像素着鲸鱼蓝（#2496ed）背景色。"""
+    from koyocode.prompt import WHALE_BLUE, render_banner
+
+    t = render_banner("0.1.0", "/tmp")
+    expected = WHALE_BLUE.lower()
+    blue_spans = [
+        s
+        for s in t.spans
+        if getattr(s.style, "bgcolor", None) is not None
+        and expected in repr(s.style.bgcolor).lower()
+    ]
+    assert len(blue_spans) > 0  # 至少一个像素点亮
+
+
+def test_render_banner_contains_header_info() -> None:
+    """banner 含应用名版本、cwd、按键提示。"""
+    from koyocode.prompt import render_banner
+
+    plain = render_banner("9.9.9", "/custom/cwd").plain
+    assert "KoyoCode v9.9.9" in plain
+    assert "/custom/cwd" in plain
+    assert "Enter" in plain  # 按键提示
+
+
+def test_cat_banner_removed() -> None:
+    """猫咪 ASCII 常量已移除。"""
+    import koyocode.prompt as prompt_pkg
+
+    assert not hasattr(prompt_pkg, "CAT_BANNER")
