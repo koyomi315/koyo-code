@@ -47,6 +47,9 @@ _COPY_FEEDBACK_TIMEOUT = 2.0
 _FOLD_ARGS_LIMIT = 60
 _DONE_FEEDBACK_TIMEOUT = 2.0
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+# 跟随滚动：流式与完成后持续把历史区滚到底，覆盖 Markdown 异步分批挂载。
+_FOLLOW_SCROLL_INTERVAL = 0.05
+_FOLLOW_SCROLL_LINGER = 1.5  # 完成后继续跟随的时长（秒）
 _SelectionPoint = tuple[int, int] | None
 _SelectionFingerprint = tuple[tuple[int, _SelectionPoint, _SelectionPoint], ...]
 
@@ -199,6 +202,8 @@ class KoyoCodeApp(App):
         self._spinner_frame: int = 0
         self._done_feedback_until: float | None = None
         self._done_timer: Timer | None = None
+        self._follow_timer: Timer | None = None
+        self._follow_stop_timer: Timer | None = None
 
     # ───────── 组装 ─────────
     def compose(self) -> ComposeResult:
@@ -293,15 +298,38 @@ class KoyoCodeApp(App):
         """直接将滚动位置设到底部（比 scroll_end 可靠，后者常停在旧 max）。"""
         history.scroll_y = history.max_scroll_y
 
-    def _scroll_history_end_deferred(self, history: VerticalScroll) -> None:
-        """二层滚动：首层刷新后再调度一次，给 Markdown 异步展开留时间。"""
-        self._scroll_history_end(history)
-        self.call_after_refresh(self._scroll_history_end, history)
+    def _start_follow_scroll(self) -> None:
+        """启动跟随滚动定时器：流式期间持续把历史区滚到底。
+
+        Markdown 回复是异步分批挂载的，单次/固定帧数的 call_after_refresh 无法
+        覆盖其展开时间窗口；改用周期定时器持续跟随，可靠保证内容增长时滚到底。
+        """
+        self._stop_follow_scroll()
+        self._follow_timer = self.set_interval(_FOLLOW_SCROLL_INTERVAL, self._follow_scroll_tick)
+
+    def _follow_scroll_tick(self) -> None:
+        if self._follow_timer is not None:
+            self._scroll_history_end(self._history())
+
+    def _stop_follow_scroll(self) -> None:
+        """停止跟随滚动定时器与完成后的延迟停止定时器。"""
+        if self._follow_timer is not None:
+            self._follow_timer.stop()
+            self._follow_timer = None
+        if self._follow_stop_timer is not None:
+            self._follow_stop_timer.stop()
+            self._follow_stop_timer = None
+
+    def _schedule_follow_scroll_stop(self) -> None:
+        """完成后：继续跟随 _FOLLOW_SCROLL_LINGER 秒再停，覆盖 Markdown 异步展开。"""
+        if self._follow_stop_timer is not None:
+            self._follow_stop_timer.stop()
+        self._follow_stop_timer = self.set_timer(_FOLLOW_SCROLL_LINGER, self._stop_follow_scroll)
 
     def _append_history_widget(self, widget: Static | Markdown) -> Static | Markdown:
         history = self._history()
         history.mount(widget)
-        self.call_after_refresh(self._scroll_history_end_deferred, history)
+        self._scroll_history_end(history)
         return widget
 
     def _append_history_text(self, text: str, classes: str = "") -> Static:
@@ -442,6 +470,7 @@ class KoyoCodeApp(App):
         self._render_streaming()
         self._stream_task = asyncio.create_task(self._consume_agent_events())
         self._timer = self.set_interval(0.1, self._tick)
+        self._start_follow_scroll()
 
     async def _consume_agent_events(self) -> None:
         """消费 ``Agent.run`` 事件流，分派文本/工具/用量/轮次/通知/审批/done/err。"""
@@ -576,9 +605,6 @@ class KoyoCodeApp(App):
         if self.state == SessionState.STREAMING:
             self._spinner_frame = (self._spinner_frame + 1) % len(_SPINNER_FRAMES)
             self._render_streaming()
-            # 流式期间持续跟随到底部：内容增长时不断把滚动推到底，
-            # 覆盖用户消息/工具结果挂载与 Markdown 异步展开导致的滚动滞后。
-            self._scroll_history_end(self._history())
 
     def _render_streaming(self) -> None:
         spinner = _SPINNER_FRAMES[self._spinner_frame]
@@ -600,23 +626,17 @@ class KoyoCodeApp(App):
         elapsed = int(time.monotonic() - self.turn_start)
         if reply:
             self._append_assistant_message(reply, elapsed)
-        # 最终回复（Markdown）异步展开，需在多个刷新周期持续滚到底，
-        # 确保展开后最新内容完整可见（单次 call_after_refresh 时机过早）。
-        self._scroll_after_finish(remaining=6)
+        # 最终回复（Markdown）异步分批挂载，跟随滚动定时器继续运行一段时间再停，
+        # 覆盖展开时间窗口，保证完成后最新内容完整可见、滚到底。
+        self._schedule_follow_scroll_stop()
         self._flash_done(elapsed)
         self._cleanup_streaming()
         self.state = SessionState.IDLE
         self.query_one("#input", InputArea).focus()
 
-    def _scroll_after_finish(self, remaining: int) -> None:
-        """完成后分多个刷新周期滚到底，覆盖 Markdown 异步展开的时间窗口。"""
-        history = self._history()
-        self._scroll_history_end(history)
-        if remaining > 1:
-            self.call_after_refresh(self._scroll_after_finish, remaining - 1)
-
     def _finish_with_error(self, err: Exception) -> None:
         self._append_history_text(f"● {err}", "error-message")
+        self._schedule_follow_scroll_stop()
         self._cleanup_streaming()
         self.state = SessionState.IDLE
         self.query_one("#input", InputArea).focus()
@@ -673,6 +693,7 @@ class KoyoCodeApp(App):
         if self._done_timer is not None:
             self._done_timer.stop()
             self._done_timer = None
+        self._stop_follow_scroll()
         self.exit()
 
     async def action_quit(self) -> None:
