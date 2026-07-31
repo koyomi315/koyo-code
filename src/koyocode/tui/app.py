@@ -65,6 +65,13 @@ def _fmt_tokens(n: int) -> str:
     return f"{n / 1000:.1f}k"
 
 
+def _fold_args(args: str, limit: int = _FOLD_ARGS_LIMIT) -> str:
+    """工具参数超长折叠：超过 limit 字符截断并加省略号，否则原样。"""
+    if len(args) > limit:
+        return args[:limit] + "…"
+    return args
+
+
 _MODE_VISUAL: dict[Mode, tuple[str, str]] = {
     Mode.DEFAULT: ("DEFAULT", ""),  # 不染色（默认前景）
     Mode.ACCEPT_EDITS: ("ACCEPT EDITS", "#FFB347"),  # 琥珀黄
@@ -533,7 +540,7 @@ class KoyoCodeApp(App):
         """工具结束：写工具行 + 结果摘要到滚动历史，从 Running 队首弹出。"""
         if self.cur_tools:
             self.cur_tools.pop(0)
-        self._append_history_text(f"● {name}({args})", "tool-line")
+        self._append_history_text(f"● {name}({_fold_args(args)})", "tool-line")
         result_class = "tool-error" if is_error else "tool-result"
         self._append_history_text(self._tool_result_text(result), result_class)
         self._render_streaming()
