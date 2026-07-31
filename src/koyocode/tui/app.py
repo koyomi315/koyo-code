@@ -128,6 +128,7 @@ class KoyoCodeApp(App):
     .assistant-message { padding: 0; margin: 0 0 1 0; }
     .elapsed-line { color: $text-muted; }
     .notice-message { color: $text-muted; }
+    .turn-separator { color: $text-muted; }
     .tool-line { text-style: bold; color: cyan; }
     .tool-result { color: $text-muted; }
     .tool-error { color: $error; text-style: bold; }
@@ -184,6 +185,7 @@ class KoyoCodeApp(App):
         self._timer: Timer | None = None
         self._copy_feedback_timer: Timer | None = None
         self._last_copied_selection: _SelectionFingerprint | None = None
+        self._turn_count: int = 0
 
     # ───────── 组装 ─────────
     def compose(self) -> ComposeResult:
@@ -383,6 +385,10 @@ class KoyoCodeApp(App):
 
     def _start_turn(self) -> None:
         """启动一轮 Agent Loop：重置本轮状态、发起 stream task。"""
+        # 非首轮先追加暗淡细线，分隔相邻回合，使每轮「query + 回复」成组。
+        if self._turn_count > 0:
+            self._append_history_text("─" * 40, "turn-separator")
+        self._turn_count += 1
         self.cur_reply = ""
         self.cur_tools = []
         self.iter = 0
