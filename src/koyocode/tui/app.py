@@ -44,6 +44,9 @@ from koyocode.tool import Registry, new_default_registry
 
 _TOOL_RESULT_MAX_LINES = 8
 _COPY_FEEDBACK_TIMEOUT = 2.0
+_FOLD_ARGS_LIMIT = 60
+_DONE_FEEDBACK_TIMEOUT = 2.0
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _SelectionPoint = tuple[int, int] | None
 _SelectionFingerprint = tuple[tuple[int, _SelectionPoint, _SelectionPoint], ...]
 
@@ -186,6 +189,7 @@ class KoyoCodeApp(App):
         self._copy_feedback_timer: Timer | None = None
         self._last_copied_selection: _SelectionFingerprint | None = None
         self._turn_count: int = 0
+        self._spinner_frame: int = 0
 
     # ───────── 组装 ─────────
     def compose(self) -> ComposeResult:
@@ -536,20 +540,22 @@ class KoyoCodeApp(App):
 
     def _tick(self) -> None:
         if self.state == SessionState.STREAMING:
+            self._spinner_frame = (self._spinner_frame + 1) % len(_SPINNER_FRAMES)
             self._render_streaming()
 
     def _render_streaming(self) -> None:
+        spinner = _SPINNER_FRAMES[self._spinner_frame]
         elapsed = int(time.monotonic() - self.turn_start)
         if self.cur_tools:
             view = "\n".join(
-                f"● {t.name}({t.args}) Running... ({elapsed}s)" for t in self.cur_tools
+                f"{spinner} {t.name}({t.args}) · {elapsed}s" for t in self.cur_tools
             )
         else:
             round_hint = f" · 第 {self.iter} 轮" if self.iter > 0 else ""
             if self.cur_reply:
-                view = f"{self.cur_reply}\nImagining... ({elapsed}s{round_hint})"
+                view = f"{self.cur_reply}\n{spinner} {elapsed}s{round_hint}"
             else:
-                view = f"Imagining... ({elapsed}s{round_hint})"
+                view = f"{spinner} {elapsed}s{round_hint}"
         self.query_one("#streaming", Static).update(view)
 
     def _finish_turn(self, reply: str) -> None:
