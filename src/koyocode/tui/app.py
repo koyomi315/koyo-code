@@ -197,6 +197,8 @@ class KoyoCodeApp(App):
         self._last_copied_selection: _SelectionFingerprint | None = None
         self._turn_count: int = 0
         self._spinner_frame: int = 0
+        self._done_feedback_until: float | None = None
+        self._done_timer: Timer | None = None
 
     # ───────── 组装 ─────────
     def compose(self) -> ComposeResult:
@@ -249,6 +251,16 @@ class KoyoCodeApp(App):
     def _update_statusbar(self) -> None:
         if self.provider is None:
             return
+        # 完成态：闪现「✓ 完成」绿色，约 _DONE_FEEDBACK_TIMEOUT 后由 timer 恢复。
+        if (
+            self._done_feedback_until is not None
+            and time.monotonic() < self._done_feedback_until
+        ):
+            elapsed = int(time.monotonic() - self.turn_start)
+            self.query_one("#statusbar", Static).update(
+                Text(f"✓ 完成 · {elapsed}s", style="green")
+            )
+            return
         label, color = _MODE_VISUAL[self.mode]
         usage = f"  ↑{_fmt_tokens(self.usage_in)} ↓{_fmt_tokens(self.usage_out)} tok"
         segments: list[tuple[str, str]] = [
@@ -259,6 +271,20 @@ class KoyoCodeApp(App):
             segments.append((f" {_CYCLE_HINT}", "dim"))
         segments.append((f"    {self.provider.model}{usage}", ""))
         self.query_one("#statusbar", Static).update(Text.assemble(*segments))
+
+    def _flash_done(self, elapsed_s: int) -> None:
+        """生成完成：状态栏闪现「✓ 完成」2 秒，timer 兜底恢复常规。"""
+        self._done_feedback_until = time.monotonic() + _DONE_FEEDBACK_TIMEOUT
+        if self._done_timer is not None:
+            self._done_timer.stop()
+        self._done_timer = self.set_timer(_DONE_FEEDBACK_TIMEOUT, self._clear_done)
+        self._update_statusbar()
+
+    def _clear_done(self) -> None:
+        """完成提示到期：清除完成态、恢复常规状态栏。"""
+        self._done_feedback_until = None
+        self._done_timer = None
+        self._update_statusbar()
 
     def _history(self) -> VerticalScroll:
         return self.query_one("#history", VerticalScroll)
@@ -572,6 +598,7 @@ class KoyoCodeApp(App):
             self._append_assistant_message(reply, elapsed)
         # 最终回复（Markdown）展开后二次确认滚动到底，保证最新内容完整可见。
         self.call_after_refresh(self._scroll_history_end, self._history())
+        self._flash_done(elapsed)
         self._cleanup_streaming()
         self.state = SessionState.IDLE
         self.query_one("#input", InputArea).focus()
@@ -631,6 +658,9 @@ class KoyoCodeApp(App):
         if self._copy_feedback_timer is not None:
             self._copy_feedback_timer.stop()
             self._copy_feedback_timer = None
+        if self._done_timer is not None:
+            self._done_timer.stop()
+            self._done_timer = None
         self.exit()
 
     async def action_quit(self) -> None:
