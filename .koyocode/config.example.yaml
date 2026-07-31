@@ -8,6 +8,7 @@ providers:
     api_key: sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
     model: claude-3-7-sonnet-latest   # thinking 需支持扩展思考的模型（如 3.7 sonnet / opus 4）
     thinking: true   # 仅 anthropic 生效；开启扩展思考（思考内容接收即丢弃，不展示）
+    context_window: 200000   # 可选；未配置时按 protocol 默认（anthropic 200000、openai 128000）
 
   # OpenAI / 兼容端点示例（去掉行首 # 启用）：
   # - name: GPT-4o

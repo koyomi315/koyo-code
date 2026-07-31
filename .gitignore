@@ -4,6 +4,9 @@
 # 权限本地层配置（永久放行规则，个人/机器特定，不入库）
 .koyocode/settings.local.yaml
 
+# 上下文压缩落盘的会话目录（调试副产物，进程退出保留但不入库）
+.koyocode/sessions/
+
 # smoke 临时输出
 smoke_out.txt
 

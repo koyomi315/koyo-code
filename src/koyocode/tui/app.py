@@ -35,12 +35,14 @@ from textual.widgets.option_list import Option
 
 from koyocode import __version__
 from koyocode.agent import Agent, ApprovalRequest, Phase
-from koyocode.config import ProviderConfig
+from koyocode.agent.runtime import SessionRuntime
+from koyocode.config import ProviderConfig, effective_context_window
 from koyocode.conversation import Conversation
 from koyocode.llm import Provider, new_provider
 from koyocode.permission import Mode, Outcome
-from koyocode.prompt import EXECUTE_DIRECTIVE, render_banner
+from koyocode.prompt import render_banner
 from koyocode.tool import Registry, new_default_registry
+from koyocode.tui.commands import dispatch_command, format_compact_notice
 
 _TOOL_RESULT_MAX_LINES = 8
 _COPY_FEEDBACK_TIMEOUT = 2.0
@@ -160,9 +162,13 @@ class KoyoCodeApp(App):
         version: str = __version__,
         registry: Registry | None = None,
         engine=None,
+        runtime: SessionRuntime | None = None,
     ) -> None:
         super().__init__()
         self.providers = providers
+        self.runtime = runtime
+        self.agent: Agent | None = None
+        self._agent_provider: Provider | None = None
         self._version = version
         self.state = SessionState.SELECTING
         self.provider: Provider | None = None
@@ -207,6 +213,7 @@ class KoyoCodeApp(App):
         ).border_subtitle = "Send a message...  (Alt+Enter 换行 · Enter 发送)"
         if len(self.providers) == 1:
             self.provider = new_provider(self.providers[0])
+            self._ensure_agent()
             self.state = SessionState.IDLE
             self._update_statusbar()
         else:
@@ -348,31 +355,36 @@ class KoyoCodeApp(App):
 
     def submit(self, text: str) -> None:
         stripped = text.strip()
+        if not stripped:
+            return
         if stripped == "/exit":
             self._quit()
             return
         if self.state != SessionState.IDLE or self.provider is None:
             return
-        if stripped == "/plan":
+        handler, is_cmd = dispatch_command(stripped)
+        if is_cmd:
             self.query_one("#input", InputArea).clear()
-            self.mode = Mode.PLAN
-            self._append_history_text(
-                "● 已进入计划模式（仅只读工具，/do 切回执行）", "notice-message"
-            )
-            self._update_statusbar()
-            return
-        if stripped == "/do":
-            self.query_one("#input", InputArea).clear()
-            self._append_history_text("● /do", "user-message")
-            self.mode = Mode.DEFAULT
-            self.conv.add_user(EXECUTE_DIRECTIVE)
-            self._update_statusbar()
-            self._start_turn()
+            asyncio.create_task(handler(self))
             return
         self.conv.add_user(text)
         self._append_history_text(f"● {text}", "user-message")
         self.query_one("#input", InputArea).clear()
         self._start_turn()
+
+    def _ensure_agent(self) -> None:
+        """惰性构造常驻 Agent；provider 变化时重建（保留同一份 runtime 跨轮复用）。"""
+        if self.provider is not None and (
+            self.agent is None or self._agent_provider is not self.provider
+        ):
+            self.agent = Agent(
+                self.provider,
+                self._tool_registry,
+                self._version,
+                self.engine,
+                runtime=self.runtime,
+            )
+            self._agent_provider = self.provider
 
     def _start_turn(self) -> None:
         """启动一轮 Agent Loop：重置本轮状态、发起 stream task。"""
@@ -391,10 +403,16 @@ class KoyoCodeApp(App):
         """消费 ``Agent.run`` 事件流，分派文本/工具/用量/轮次/通知/审批/done/err。"""
         assert self.provider is not None
         assert self.turn_cancel is not None
-        agent = Agent(self.provider, self._tool_registry, self._version, self.engine)
+        self._ensure_agent()
+        assert self.agent is not None
         finished = False
         try:
-            async for ev in agent.run(self.conv, self.mode, self.turn_cancel):
+            async for ev in self.agent.run(self.conv, self.mode, self.turn_cancel):
+                if ev.compact is not None:
+                    self._append_history_text(
+                        f"● {format_compact_notice(ev.compact)}", "notice-message"
+                    )
+                    continue
                 if ev.err is not None:
                     self._finish_with_error(ev.err)
                     finished = True
@@ -568,6 +586,9 @@ class KoyoCodeApp(App):
         idx = int(event.option.id)  # type: ignore[arg-type]
         cfg = self.providers[idx]
         self.provider = new_provider(cfg)
+        if self.runtime is not None:
+            self.runtime.context_window = effective_context_window(cfg)
+        self._ensure_agent()
         self._update_statusbar()
         self.state = SessionState.IDLE
         self._apply_state()
@@ -633,6 +654,9 @@ def new_app(
     version: str,
     registry: Registry,
     engine,
+    runtime: SessionRuntime | None = None,
 ) -> KoyoCodeApp:
-    """装配 KoyoCodeApp（保持单返回，末尾增 ``engine`` 形参）。"""
-    return KoyoCodeApp(providers=providers, version=version, registry=registry, engine=engine)
+    """装配 KuyoCodeApp（ch08：增 ``runtime`` 形参注入上下文管理状态）。"""
+    return KoyoCodeApp(
+        providers=providers, version=version, registry=registry, engine=engine, runtime=runtime
+    )

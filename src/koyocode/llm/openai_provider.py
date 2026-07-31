@@ -15,7 +15,14 @@ from collections.abc import AsyncIterator
 import openai
 
 from koyocode.config import ProviderConfig
-from koyocode.llm import Request, StreamEvent, ToolDefinition, ToolUseBlock, Usage
+from koyocode.llm import (
+    PromptTooLongError,
+    Request,
+    StreamEvent,
+    ToolDefinition,
+    ToolUseBlock,
+    Usage,
+)
 
 
 def _to_openai_tools(tools: list[ToolDefinition]) -> list[dict]:
@@ -70,6 +77,21 @@ def _to_openai_messages(req: Request) -> list[dict]:
     if req.reminder:
         out.append({"role": "user", "content": req.reminder})
     return out
+
+
+def _is_context_length_exceeded_openai(e: Exception) -> bool:
+    """openai BadRequestError 是否为上下文超长。"""
+    text = str(e).lower()
+    return "context_length_exceeded" in text or "context length" in text
+
+
+def _wrap_openai_err(e: openai.BadRequestError) -> Exception:
+    """openai 400 命中上下文超长时包装为 PromptTooLongError，否则原样返回。"""
+    if _is_context_length_exceeded_openai(e):
+        wrapped: Exception = PromptTooLongError("openai prompt too long")
+        wrapped.__cause__ = e
+        return wrapped
+    return e
 
 
 class OpenAIProvider:
@@ -135,6 +157,9 @@ class OpenAIProvider:
                             slot["args"] = slot.get("args", "") + tc.function.arguments
         except asyncio.CancelledError:
             raise
+        except openai.BadRequestError as e:
+            yield StreamEvent(err=_wrap_openai_err(e))
+            return
         except Exception as e:  # noqa: BLE001 - 任意运行时错误转为 err 事件
             yield StreamEvent(err=e)
             return

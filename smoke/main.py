@@ -17,8 +17,9 @@ import json
 from pathlib import Path
 
 from koyocode.agent import Agent, Mode
+from koyocode.agent.runtime import new_session_runtime
 from koyocode.conversation import Conversation
-from koyocode.llm import StreamEvent, ToolCall
+from koyocode.llm import StreamEvent, ToolUseBlock
 from koyocode.permission import new_engine
 from koyocode.tool import new_default_registry
 
@@ -37,8 +38,8 @@ class FakeProvider:
         if self._i == 1:
             target = str(Path.cwd() / "smoke_out.txt")
             yield StreamEvent(
-                tool_calls=[
-                    ToolCall(
+                tool_uses=[
+                    ToolUseBlock(
                         id="c1",
                         name="write_file",
                         input=json.dumps({"path": target, "content": "smoke ok\n"}),
@@ -59,7 +60,8 @@ async def _run_smoke() -> None:
 
     provider = FakeProvider()
     registry = new_default_registry()
-    agent = Agent(provider, registry, "smoke", engine)
+    runtime = new_session_runtime(workspace=cwd, context_window=200000)
+    agent = Agent(provider, registry, "smoke", engine, runtime=runtime)
 
     conv = Conversation()
     conv.add_user("smoke: 写一个文件")

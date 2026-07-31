@@ -16,7 +16,8 @@ from pathlib import Path
 
 from koyocode import __version__, permission
 from koyocode import mcp as mcp_client
-from koyocode.config import ConfigError, load
+from koyocode.agent.runtime import new_session_runtime
+from koyocode.config import ConfigError, effective_context_window, load
 from koyocode.tool import new_default_registry
 from koyocode.tui import new_app
 
@@ -63,7 +64,10 @@ async def _amain() -> int:
     try:
         for t in mgr.tools():
             registry.register(t)
-        app = new_app(cfg.providers, __version__, registry, engine)
+        # 上下文管理状态：单 provider 启动期即知 context_window；多 provider 由 TUI 选定后注入
+        cw = effective_context_window(cfg.providers[0]) if len(cfg.providers) == 1 else 200000
+        runtime = new_session_runtime(workspace=root, context_window=cw)
+        app = new_app(cfg.providers, __version__, registry, engine, runtime=runtime)
         await app.run_async()
     finally:
         await mgr.close()

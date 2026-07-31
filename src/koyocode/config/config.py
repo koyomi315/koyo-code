@@ -10,6 +10,11 @@ from typing import Literal
 
 import yaml
 
+from koyocode.config.protocol_defaults import (
+    DEFAULT_ANTHROPIC_CONTEXT_WINDOW,
+    DEFAULT_OPENAI_CONTEXT_WINDOW,
+)
+
 
 class ConfigError(Exception):
     """配置加载或校验失败。"""
@@ -25,6 +30,7 @@ class ProviderConfig:
     model: str
     base_url: str | None = None  # None 则用 SDK 默认端点
     thinking: bool = False  # 仅 anthropic 生效
+    context_window: int = 0  # 单位 token，0 表示走协议默认
 
 
 @dataclass
@@ -32,6 +38,20 @@ class Config:
     """整体配置：providers 列表。"""
 
     providers: list[ProviderConfig] = field(default_factory=list)
+
+
+def effective_context_window(p: ProviderConfig) -> int:
+    """返回 provider 的有效上下文窗口：配置 > 0 用配置值，否则按协议默认。
+
+    未知协议保守取 anthropic 默认值（200000）。
+    """
+    if p.context_window > 0:
+        return p.context_window
+    if p.protocol == "anthropic":
+        return DEFAULT_ANTHROPIC_CONTEXT_WINDOW
+    if p.protocol == "openai":
+        return DEFAULT_OPENAI_CONTEXT_WINDOW
+    return DEFAULT_ANTHROPIC_CONTEXT_WINDOW
 
 
 _VALID_PROTOCOLS = {"anthropic", "openai"}
@@ -70,6 +90,7 @@ def _parse_provider(item: object, index: int) -> ProviderConfig:
     model = item.get("model")
     base_url = item.get("base_url")
     thinking = item.get("thinking", False)
+    context_window = item.get("context_window", 0)
 
     _require_non_empty(name, f"{prefix}.name")
     _require_non_empty(protocol, f"{prefix}.protocol")
@@ -81,6 +102,12 @@ def _parse_provider(item: object, index: int) -> ProviderConfig:
         raise ConfigError(f"{prefix}.base_url 应为字符串")
     if not isinstance(thinking, bool):
         raise ConfigError(f"{prefix}.thinking 应为布尔值")
+    if (
+        not isinstance(context_window, int)
+        or isinstance(context_window, bool)
+        or context_window < 0
+    ):
+        raise ConfigError(f"{prefix}.context_window 应为非负整数")
 
     return ProviderConfig(
         name=str(name),
@@ -89,6 +116,7 @@ def _parse_provider(item: object, index: int) -> ProviderConfig:
         model=str(model),
         base_url=base_url or None,
         thinking=thinking,
+        context_window=context_window,
     )
 
 

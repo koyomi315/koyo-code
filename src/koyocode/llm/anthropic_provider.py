@@ -18,7 +18,15 @@ from collections.abc import AsyncIterator
 import anthropic
 
 from koyocode.config import ProviderConfig
-from koyocode.llm import Message, Request, StreamEvent, ToolDefinition, ToolUseBlock, Usage
+from koyocode.llm import (
+    Message,
+    PromptTooLongError,
+    Request,
+    StreamEvent,
+    ToolDefinition,
+    ToolUseBlock,
+    Usage,
+)
 
 _MAX_TOKENS = 4096
 _THINKING_BUDGET = 2048
@@ -104,6 +112,21 @@ def _build_anthropic_system(stable: str, environment: str) -> list[dict]:
     return blocks
 
 
+def _is_prompt_too_long_anthropic(e: Exception) -> bool:
+    """anthropic BadRequestError 是否为上下文过长。"""
+    text = str(e).lower()
+    return "prompt is too long" in text or "context_length" in text or "prompt_too_long" in text
+
+
+def _wrap_anthropic_err(e: anthropic.BadRequestError) -> Exception:
+    """anthropic 400 命中上下文过长时包装为 PromptTooLongError，否则原样返回。"""
+    if _is_prompt_too_long_anthropic(e):
+        wrapped: Exception = PromptTooLongError("anthropic prompt too long")
+        wrapped.__cause__ = e
+        return wrapped
+    return e
+
+
 class AnthropicProvider:
     """anthropic 协议的 Provider 实现。"""
 
@@ -172,6 +195,9 @@ class AnthropicProvider:
                 )
         except asyncio.CancelledError:
             raise
+        except anthropic.BadRequestError as e:
+            yield StreamEvent(err=_wrap_anthropic_err(e))
+            return
         except Exception as e:  # noqa: BLE001 - 任意运行时错误均转为 err 事件
             yield StreamEvent(err=e)
             return

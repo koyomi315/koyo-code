@@ -22,15 +22,32 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 from koyocode import prompt
+from koyocode.agent.event import CompactEvent, CompactPhase
+from koyocode.agent.runtime import SessionRuntime
+from koyocode.compact import (
+    CompactCircuitBreaker,
+    ContentReplacementState,
+    ManageInput,
+    RecoveryState,
+    TriggerKind,
+    estimate_tokens,
+    manage_context,
+    new_session_context,
+    usage_anchor,
+)
+from koyocode.compact.const import AUTO_SAFETY_MARGIN, MANUAL_SAFETY_MARGIN, SUMMARY_RESERVE
 from koyocode.conversation import Conversation
 from koyocode.llm import (
     ROLE_ASSISTANT,
+    PromptTooLongError,
     Provider,
     Request,
     System,
@@ -115,6 +132,7 @@ class Event:
     done: bool = False
     err: Exception | None = None
     approval: ApprovalRequest | None = None
+    compact: CompactEvent | None = None
 
 
 def _preview_args(input_str: str) -> str:
@@ -149,6 +167,7 @@ class _StreamOutcome:
     calls: list[ToolUseBlock] = field(default_factory=list)
     usage: LLMUsage | None = None
     ok: bool = True
+    err: Exception | None = None
 
 
 async def _stream_once(
@@ -174,7 +193,7 @@ async def _stream_once(
                 outcome.ok = False
                 return
             if se.err is not None:
-                yield Event(err=se.err)
+                outcome.err = se.err
                 outcome.ok = False
                 return
             if se.usage is not None:
@@ -187,7 +206,7 @@ async def _stream_once(
     except asyncio.CancelledError:
         raise
     except Exception as e:  # noqa: BLE001 - 任意运行时错误转为 err 事件
-        yield Event(err=e)
+        outcome.err = e
         outcome.ok = False
         return
     if cancel.is_set():
@@ -433,12 +452,29 @@ class Agent:
     """持有 provider 与注册中心与权限引擎，执行 ReAct 循环。"""
 
     def __init__(
-        self, provider: Provider, registry: Registry, version: str, engine: Engine
+        self,
+        provider: Provider,
+        registry: Registry,
+        version: str,
+        engine: Engine,
+        runtime: SessionRuntime | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
         self._version = version
         self._engine = engine
+        # runtime=None 时构造默认实例，保留对无 compact 场景与旧测试的兼容
+        if runtime is None:
+            runtime = SessionRuntime(
+                replacement=ContentReplacementState(),
+                recovery=RecoveryState(),
+                auto_tracking=CompactCircuitBreaker(),
+                session=new_session_context("."),
+                context_window=200000,
+            )
+        self.runtime = runtime
+        self._run_lock = asyncio.Lock()
+        self._last_manage_output = None
 
     @property
     def engine(self) -> Engine:
@@ -451,87 +487,259 @@ class Agent:
     async def _run_impl(
         self, conv: Conversation, mode: Mode, cancel: asyncio.Event
     ) -> AsyncIterator[Event]:
-        env = prompt.gather_environment(self._version, self._provider.model)
-        sys_text = prompt.build_system_prompt()
-        env_text = env.render()
-        if mode == Mode.PLAN:
-            defs = self._registry.read_only_definitions()
-        else:
-            defs = self._registry.definitions()
-
-        unknown_run = 0
-        for it in range(1, MAX_ITERATIONS + 1):
-            yield Event(iter=it)
-            if cancel.is_set():
-                _ensure_assistant_tail(conv, NOTICE_CANCELLED)
-                return
-
-            reminder = ""
-            if mode == Mode.PLAN:
-                full = it == 1 or (it - 1) % PLAN_REMINDER_INTERVAL == 0
-                reminder = prompt.plan_reminder(full)
-
-            stream_outcome = _StreamOutcome()
-            async for ev in _stream_once(
-                self._provider, conv, defs, sys_text, env_text, reminder, cancel, stream_outcome
-            ):
-                yield ev
-
-            if not stream_outcome.ok:
+        async with self._run_lock:
+            env = prompt.gather_environment(self._version, self._provider.model)
+            sys_text = prompt.build_system_prompt()
+            env_text = env.render()
+            unknown_run = 0
+            for it in range(1, MAX_ITERATIONS + 1):
+                emergency_retried = False
+                yield Event(iter=it)
                 if cancel.is_set():
                     _ensure_assistant_tail(conv, NOTICE_CANCELLED)
-                else:
-                    _ensure_assistant_tail(conv, NOTICE_STREAM_ERR)
-                return
+                    return
 
-            if stream_outcome.usage is not None:
-                yield Event(
-                    usage=Usage(
-                        input=stream_outcome.usage.input_tokens,
-                        output=stream_outcome.usage.output_tokens,
-                        cache_write=stream_outcome.usage.cache_write,
-                        cache_read=stream_outcome.usage.cache_read,
+                # 本轮工具定义（mode 决定），恢复段与 stream 共用同一份引用
+                if mode == Mode.PLAN:
+                    defs = self._registry.read_only_definitions()
+                else:
+                    defs = self._registry.definitions()
+
+                reminder = ""
+                if mode == Mode.PLAN:
+                    full = it == 1 or (it - 1) % PLAN_REMINDER_INTERVAL == 0
+                    reminder = prompt.plan_reminder(full)
+
+                # 上下文管理（AUTO：layer1 + 阈值判断 + 可能 layer2）
+                try:
+                    async for ev in self._manage_and_emit(conv, defs, TriggerKind.AUTO):
+                        yield ev
+                except Exception as err:  # noqa: BLE001
+                    yield Event(err=err)
+                    _ensure_assistant_tail(conv, NOTICE_STREAM_ERR)
+                    return
+
+                stream_outcome = _StreamOutcome()
+                async for ev in _stream_once(
+                    self._provider, conv, defs, sys_text, env_text, reminder, cancel, stream_outcome
+                ):
+                    yield ev
+
+                # PTL 紧急压缩 + 同迭代重试一次（emergency_retried 锁定一次性）
+                if (
+                    not stream_outcome.ok
+                    and not cancel.is_set()
+                    and isinstance(stream_outcome.err, PromptTooLongError)
+                    and not emergency_retried
+                ):
+                    emergency_retried = True
+                    try:
+                        async for ev in self._manage_and_emit(conv, defs, TriggerKind.EMERGENCY):
+                            yield ev
+                    except Exception as ferr:  # noqa: BLE001
+                        yield Event(err=ferr)
+                        _ensure_assistant_tail(conv, NOTICE_STREAM_ERR)
+                        return
+                    self.runtime.usage_anchor = 0
+                    self.runtime.anchor_msg_len = 0
+                    est = estimate_tokens(0, conv.messages(), 0)
+                    if est >= self.runtime.context_window - MANUAL_SAFETY_MARGIN:
+                        yield Event(err=stream_outcome.err)
+                        _ensure_assistant_tail(conv, NOTICE_STREAM_ERR)
+                        return
+                    stream_outcome = _StreamOutcome()
+                    async for ev in _stream_once(
+                        self._provider,
+                        conv,
+                        defs,
+                        sys_text,
+                        env_text,
+                        reminder,
+                        cancel,
+                        stream_outcome,
+                    ):
+                        yield ev
+
+                if not stream_outcome.ok:
+                    if cancel.is_set():
+                        _ensure_assistant_tail(conv, NOTICE_CANCELLED)
+                    else:
+                        if stream_outcome.err is not None:
+                            yield Event(err=stream_outcome.err)
+                        _ensure_assistant_tail(conv, NOTICE_STREAM_ERR)
+                    return
+
+                # 主对话路径 usage 更新（替换，非累加）；摘要请求不更新锚点
+                if stream_outcome.usage is not None:
+                    self.runtime.usage_anchor = usage_anchor(stream_outcome.usage)
+                    self.runtime.anchor_msg_len = conv.length()
+                    yield Event(
+                        usage=Usage(
+                            input=stream_outcome.usage.input_tokens,
+                            output=stream_outcome.usage.output_tokens,
+                            cache_write=stream_outcome.usage.cache_write,
+                            cache_read=stream_outcome.usage.cache_read,
+                        )
                     )
+
+                if not stream_outcome.calls:
+                    final = _ensure_final(stream_outcome.text)
+                    if not stream_outcome.text:
+                        yield Event(text=final)
+                    conv.add_assistant(final)
+                    yield Event(done=True)
+                    return
+
+                conv.add_assistant_with_tool_uses(stream_outcome.text, stream_outcome.calls)
+                unknown_run = (
+                    unknown_run + 1 if _all_unknown(self._registry, stream_outcome.calls) else 0
                 )
 
-            if not stream_outcome.calls:
-                final = _ensure_final(stream_outcome.text)
-                if not stream_outcome.text:
-                    yield Event(text=final)
-                conv.add_assistant(final)
-                yield Event(done=True)
-                return
+                batch_outcome = _BatchOutcome()
+                async for ev in _execute_batched(
+                    self, self._registry, stream_outcome.calls, mode, cancel, batch_outcome
+                ):
+                    yield ev
+                # ReadFile 追踪：add_tool_results 前用纯净字节记录到 recovery（F19）
+                await self._track_read_files(stream_outcome.calls, batch_outcome.results)
+                conv.add_tool_results(batch_outcome.results)
 
-            conv.add_assistant_with_tool_uses(stream_outcome.text, stream_outcome.calls)
-            unknown_run = (
-                unknown_run + 1 if _all_unknown(self._registry, stream_outcome.calls) else 0
+                if not batch_outcome.completed:
+                    _ensure_assistant_tail(conv, NOTICE_CANCELLED)
+                    return
+
+                if unknown_run >= MAX_UNKNOWN_RUN:
+                    yield Event(notice=NOTICE_UNKNOWN_TOOLS)
+                    _ensure_assistant_tail(conv, NOTICE_UNKNOWN_TOOLS)
+                    yield Event(done=True)
+                    return
+
+            yield Event(notice=NOTICE_MAX_ITER)
+            _ensure_assistant_tail(conv, NOTICE_MAX_ITER)
+            yield Event(done=True)
+
+    async def _manage_and_emit(
+        self,
+        conv: Conversation,
+        defs: list[ToolDefinition],
+        trigger: TriggerKind,
+    ) -> AsyncIterator[Event]:
+        """构造 ManageInput 调 manage_context，并在摘要前后 emit Compact 事件。
+
+        AUTO 在估算超阈值时 emit BEFORE_AUTO/AFTER_AUTO；EMERGENCY 总是 emit
+        BEFORE_EMERGENCY/AFTER_EMERGENCY。仅 layer1（未触发 layer2）时不 emit
+        任何 Compact 事件（layer1 静默）。manage_context 异常在 emit 完 AFTER 后抛出。
+        """
+        anchor = self.runtime.usage_anchor
+        anchor_len = self.runtime.anchor_msg_len
+        cw = self.runtime.context_window
+        est = estimate_tokens(anchor, conv.messages(), anchor_len)
+        in_ = ManageInput(
+            conv=conv,
+            provider=self._provider,
+            context_window=cw,
+            tool_defs=defs,
+            replacement=self.runtime.replacement,
+            recovery=self.runtime.recovery,
+            auto_tracking=self.runtime.auto_tracking,
+            session=self.runtime.session,
+            usage_anchor=anchor,
+            anchor_msg_len=anchor_len,
+            estimated_token=est,
+            trigger=trigger,
+        )
+        will_auto = trigger == TriggerKind.AUTO and est >= cw - SUMMARY_RESERVE - AUTO_SAFETY_MARGIN
+        if will_auto:
+            yield Event(compact=CompactEvent(phase=CompactPhase.BEFORE_AUTO, before=est))
+        if trigger == TriggerKind.EMERGENCY:
+            yield Event(compact=CompactEvent(phase=CompactPhase.BEFORE_EMERGENCY))
+        try:
+            out = await manage_context(in_)
+            mc_err: Exception | None = None
+        except Exception as e:  # noqa: BLE001
+            out = None
+            mc_err = e
+        after = out.after_tokens if out is not None else 0
+        if will_auto:
+            yield Event(
+                compact=CompactEvent(
+                    phase=CompactPhase.AFTER_AUTO, before=est, after=after, err=mc_err
+                )
             )
+        if trigger == TriggerKind.EMERGENCY:
+            yield Event(
+                compact=CompactEvent(
+                    phase=CompactPhase.AFTER_EMERGENCY, before=est, after=after, err=mc_err
+                )
+            )
+        if mc_err is not None:
+            raise mc_err
 
-            batch_outcome = _BatchOutcome()
-            async for ev in _execute_batched(
-                self, self._registry, stream_outcome.calls, mode, cancel, batch_outcome
-            ):
-                yield ev
-            conv.add_tool_results(batch_outcome.results)
+    async def _track_read_files(
+        self, calls: list[ToolUseBlock], results: list[ToolResultBlock]
+    ) -> None:
+        """对成功的 read_file 调用，用纯净字节（不带行号）记录到 recovery（F19）。
 
-            if not batch_outcome.completed:
-                _ensure_assistant_tail(conv, NOTICE_CANCELLED)
-                return
+        必须在 ``conv.add_tool_results`` 之前完成，保证下一次 ``manage_context``
+        能观察到本轮 ReadFile 记录。读盘失败静默跳过。
+        """
+        for call, result in zip(calls, results, strict=True):
+            if call.name != "read_file" or result.is_error:
+                continue
+            try:
+                args = json.loads(call.input) if call.input else {}
+            except json.JSONDecodeError:
+                continue
+            path = args.get("path") if isinstance(args, dict) else None
+            if not isinstance(path, str) or not path:
+                continue
+            try:
+                abs_path = str(Path(path).resolve())
+                data = await asyncio.to_thread(Path(abs_path).read_bytes)
+            except (OSError, ValueError):
+                continue
+            self.runtime.recovery.record_file(abs_path, data.decode("utf-8", errors="replace"))
 
-            if unknown_run >= MAX_UNKNOWN_RUN:
-                yield Event(notice=NOTICE_UNKNOWN_TOOLS)
-                _ensure_assistant_tail(conv, NOTICE_UNKNOWN_TOOLS)
-                yield Event(done=True)
-                return
+    async def run_force_compact(
+        self, conv: Conversation, tool_defs: list[ToolDefinition]
+    ) -> tuple[int, int]:
+        """手动 ``/compact`` 入口：跳过阈值与熔断，无条件 force_compact。
 
-        yield Event(notice=NOTICE_MAX_ITER)
-        _ensure_assistant_tail(conv, NOTICE_MAX_ITER)
-        yield Event(done=True)
+        返回 ``(before, after)``；失败让异常向上抛由 TUI 捕获。入口先持 ``_run_lock``，
+        保证不与正在进行的 run 并发触发 manage_context。
+        """
+        async with self._run_lock:
+            anchor = self.runtime.usage_anchor
+            anchor_len = self.runtime.anchor_msg_len
+            cw = self.runtime.context_window
+            est = estimate_tokens(anchor, conv.messages(), anchor_len)
+            in_ = ManageInput(
+                conv=conv,
+                provider=self._provider,
+                context_window=cw,
+                tool_defs=tool_defs,
+                replacement=self.runtime.replacement,
+                recovery=self.runtime.recovery,
+                auto_tracking=self.runtime.auto_tracking,
+                session=self.runtime.session,
+                usage_anchor=anchor,
+                anchor_msg_len=anchor_len,
+                estimated_token=est,
+                trigger=TriggerKind.MANUAL,
+            )
+            out = await manage_context(in_)
+            return out.before_tokens, out.after_tokens
 
 
-def new_agent(provider: Provider, registry: Registry, version: str, engine: Engine) -> Agent:
-    """构造 ``Agent``（T8：增 ``engine`` 形参）。"""
-    return Agent(provider, registry, version, engine)
+def new_agent(
+    provider: Provider,
+    registry: Registry,
+    version: str,
+    engine: Engine,
+    runtime: SessionRuntime | None = None,
+) -> Agent:
+    """构造 ``Agent``（ch08：增 ``runtime`` 关键字参数）。"""
+    return Agent(provider, registry, version, engine, runtime=runtime)
 
 
 __all__ = [

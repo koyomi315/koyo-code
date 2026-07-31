@@ -22,6 +22,15 @@ ROLE_ASSISTANT: Literal["assistant"] = "assistant"
 ROLE_TOOL: Literal["tool"] = "tool"
 
 
+class PromptTooLongError(Exception):
+    """Provider 上报上下文超出窗口时统一抛出的哨兵异常。
+
+    anthropic / openai 适配器把各自的「上下文过长」SDK 异常包装成本类后通过
+    ``yield StreamEvent(err=...)`` 投递到事件流；``__cause__`` 保留原 SDK 异常供调试。
+    主循环用 ``isinstance(err, PromptTooLongError)`` 统一识别，触发紧急压缩。
+    """
+
+
 @dataclass
 class ToolUseBlock:
     """协议无关地承载模型发起的一次工具调用（流式拼接完成后）。
