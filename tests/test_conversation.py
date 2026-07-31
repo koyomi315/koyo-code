@@ -63,3 +63,21 @@ def test_tool_turns_roundtrip() -> None:
     # 末尾为最终文本答复
     assert msgs[3].content == "这是文件的内容总结"
     assert msgs[3].tool_uses == []
+
+
+def test_replace_history_deep_copy() -> None:
+    c = Conversation()
+    msgs = [Message(role="user", content="a"), Message(role="user", content="b")]
+    c.replace_history(msgs)
+    msgs[0].content = "changed"  # 修改原列表不影响 conversation
+    assert c.messages()[0].content == "a"
+    assert len(c.messages()) == 2
+
+
+def test_replace_history_empty() -> None:
+    c = Conversation()
+    c.add_user("x")
+    c.replace_history(None)
+    assert c.messages() == []
+    c.replace_history([])
+    assert c.messages() == []

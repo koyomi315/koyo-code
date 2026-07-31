@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from koyocode.config import Config, ConfigError, ProviderConfig, load
+from koyocode.config import Config, ConfigError, ProviderConfig, effective_context_window, load
 
 
 def _write(tmp_path: Path, text: str) -> str:
@@ -146,3 +146,30 @@ providers:
     )
     with pytest.raises(ConfigError, match=r"providers\[1\]\.model"):
         load(path)
+
+
+def test_effective_context_window_unconfigured() -> None:
+    p = ProviderConfig(name="a", protocol="anthropic", api_key="k", model="m")
+    assert effective_context_window(p) == 200000
+
+
+def test_effective_context_window_zero() -> None:
+    p = ProviderConfig(name="a", protocol="openai", api_key="k", model="m", context_window=0)
+    assert effective_context_window(p) == 128000
+
+
+def test_effective_context_window_positive() -> None:
+    p = ProviderConfig(name="a", protocol="anthropic", api_key="k", model="m", context_window=80000)
+    assert effective_context_window(p) == 80000
+
+
+def test_effective_context_window_unknown_protocol() -> None:
+    p = ProviderConfig(name="a", protocol="anthropic", api_key="k", model="m")
+    p.protocol = "gemini"  # type: ignore[assignment]
+    assert effective_context_window(p) == 200000
+
+
+def test_config_example_yaml_parses() -> None:
+    cfg = load(".koyocode/config.example.yaml")
+    assert len(cfg.providers) >= 1
+    assert cfg.providers[0].context_window > 0
