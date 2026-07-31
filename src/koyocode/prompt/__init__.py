@@ -5,18 +5,51 @@
 
 旧的单常量 ``SYSTEM_PROMPT`` / ``PLAN_MODE_REMINDER`` 已拆分为模块化装配与
 ``reminder`` 子模块；``EXECUTE_DIRECTIVE`` 迁至 ``reminder``（本包顶层仍重导出，
-import 路径不变）。banner（``CAT_BANNER`` / ``READY_HINT`` / ``render_banner``）保留。
+import 路径不变）。banner（``LOGO_FONT`` / ``_render_logo`` / ``render_banner``）
+以点阵 logo + 功能性头部呈现。
 """
+
+from rich.style import Style
+from rich.text import Text
 
 from koyocode.prompt.environment import Environment, gather_environment
 from koyocode.prompt.modules import Module, fixed_modules, optional_modules
 from koyocode.prompt.reminder import EXECUTE_DIRECTIVE, plan_reminder, system_reminder
 
-CAT_BANNER = r"""  /\_/\
- ( o.o )
-  > ^ <"""
+# 品牌颜色与点阵字体：3 列 × 5 行的 1/0 位图，仅含 KOYOCODE 所需字母。
+WHALE_BLUE = "#2496ED"  # 鲸鱼蓝（Docker 蓝），logo 像素背景色
+LOGO_TEXT = "KOYOCODE"
+_PIXEL_ON = "  "  # 两个空格组成近似正方形像素
 
-READY_HINT = "● 就绪：Enter 发送 · Alt+Enter 换行 · /plan /do 切换模式 · /exit 或 Ctrl+C 退出"
+LOGO_FONT: dict[str, list[str]] = {
+    "K": ["101", "110", "100", "110", "101"],
+    "O": ["111", "101", "101", "101", "111"],
+    "Y": ["101", "101", "010", "010", "010"],
+    "C": ["111", "100", "100", "100", "111"],
+    "D": ["110", "101", "101", "101", "110"],
+    "E": ["111", "100", "110", "100", "111"],
+}
+
+READY_HINT = "Enter 发送 · Alt+Enter 换行 · /plan /do 切换模式 · /exit 退出"
+
+
+def _render_logo(text: str) -> Text:
+    """按 ``LOGO_FONT`` 点阵渲染 ``text``：1 像素着鲸鱼蓝背景，0 留空，字母间留一列。"""
+    out = Text()
+    blue = Style(bgcolor=WHALE_BLUE)
+    for row in range(5):
+        for col_idx, char in enumerate(text):
+            glyph = LOGO_FONT[char][row]
+            for pixel in glyph:
+                if pixel == "1":
+                    out.append(_PIXEL_ON, style=blue)
+                else:
+                    out.append(_PIXEL_ON)
+            # 字母之间留一列空白（行内最后一个字母不加）
+            if col_idx < len(text) - 1:
+                out.append(" ")
+        out.append("\n")
+    return out
 
 
 def assemble_system(mods: list[Module]) -> str:
@@ -33,25 +66,29 @@ def build_system_prompt() -> str:
     return assemble_system(fixed_modules() + optional_modules())
 
 
-def render_banner(version: str, cwd: str) -> str:
-    """拼出启动横幅：猫 + 应用名与版本 + 工作目录 + 就绪提示行。"""
-    lines = [
-        CAT_BANNER,
-        f"  koyoCode v{version}",
-        f"  cwd: {cwd}",
-        "",
-        READY_HINT,
-        "",
-    ]
-    return "\n".join(lines)
+def render_banner(version: str, cwd: str) -> Text:
+    """返回 banner：logo（rich.Text，真彩色背景像素）+ 功能性头部多行文本。
+
+    logo 各行像素以 ``Style(bgcolor=WHALE_BLUE)`` 着色；头部应用名粗体、
+    cwd 与按键提示暗淡，整体克制干净。
+    """
+    out = Text()
+    out.append_text(_render_logo(LOGO_TEXT))
+    out.append("\n")
+    out.append(f"KoyoCode v{version}\n", style="bold")
+    out.append(f"{cwd}\n", style="dim")
+    out.append(READY_HINT, style="dim")
+    return out
 
 
 __all__ = [
-    "CAT_BANNER",
     "Environment",
     "EXECUTE_DIRECTIVE",
+    "LOGO_FONT",
+    "LOGO_TEXT",
     "Module",
     "READY_HINT",
+    "WHALE_BLUE",
     "assemble_system",
     "build_system_prompt",
     "fixed_modules",
